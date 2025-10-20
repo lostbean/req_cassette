@@ -465,7 +465,10 @@ defmodule ReqCassette.Plug do
         match_on = opts[:match_requests_on] || [:method, :uri, :query, :headers, :body]
         filter_opts = extract_filter_opts(opts)
 
-        case Cassette.find_interaction(cassette, conn, body, match_on, filter_opts) do
+        # Build and filter request ONCE at entry point
+        filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
+
+        case Cassette.find_interaction(cassette, filtered_request, match_on) do
           {:ok, response} ->
             conn
             |> put_resp_headers(response["headers"])
@@ -508,7 +511,10 @@ defmodule ReqCassette.Plug do
         match_on = opts[:match_requests_on] || [:method, :uri, :query, :headers, :body]
         filter_opts = extract_filter_opts(opts)
 
-        case Cassette.find_interaction(cassette, conn, body, match_on, filter_opts) do
+        # Build and filter request ONCE at entry point
+        filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
+
+        case Cassette.find_interaction(cassette, filtered_request, match_on) do
           {:ok, response} ->
             # Found matching interaction - replay it
             conn
@@ -521,8 +527,8 @@ defmodule ReqCassette.Plug do
             {conn, resp_or_error} = forward_and_capture(conn, body, opts)
             resp = normalize_response(resp_or_error)
 
-            # Add new interaction to existing cassette
-            cassette = Cassette.add_interaction(cassette, conn, body, resp, opts)
+            # Add new interaction using already-filtered request
+            cassette = Cassette.add_interaction(cassette, filtered_request, resp, opts)
             Cassette.save(path, cassette)
 
             resp_to_conn(conn, resp)
@@ -530,11 +536,14 @@ defmodule ReqCassette.Plug do
 
       :not_found ->
         # Cassette doesn't exist - record new one
+        filter_opts = extract_filter_opts(opts)
+        filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
+
         {conn, resp_or_error} = forward_and_capture(conn, body, opts)
         resp = normalize_response(resp_or_error)
 
         cassette = Cassette.new()
-        cassette = Cassette.add_interaction(cassette, conn, body, resp, opts)
+        cassette = Cassette.add_interaction(cassette, filtered_request, resp, opts)
         Cassette.save(path, cassette)
 
         resp_to_conn(conn, resp)
@@ -542,14 +551,152 @@ defmodule ReqCassette.Plug do
   end
 
   defp extract_filter_opts(opts) do
-    %{
+    base_opts = %{
       filter_sensitive_data: opts[:filter_sensitive_data] || [],
       filter_request_headers: opts[:filter_request_headers] || [],
       filter_response_headers: opts[:filter_response_headers] || [],
       filter_request: opts[:filter_request],
       filter_response: opts[:filter_response]
     }
+
+    # Add template options if present
+    if opts[:template] do
+      Map.put(base_opts, :template, opts[:template])
+    else
+      base_opts
+    end
   end
+
+  # Build and filter incoming request once at entry point
+  # This ensures all downstream code (template matching, standard matching) works on filtered data
+  defp build_and_filter_incoming_request(conn, body, filter_opts) do
+    # 1. Build request structure
+    body_type = BodyType.detect_type(body, headers_to_map(conn.req_headers))
+    {body_field, body_value} = BodyType.encode(body, body_type)
+
+    request =
+      %{
+        "method" => conn.method,
+        "uri" => build_uri(conn),
+        "query_string" => conn.query_string,
+        "headers" => headers_to_map(conn.req_headers),
+        "body_type" => to_string(body_type)
+      }
+      |> Map.put(body_field, body_value)
+
+    # 2. Apply ALL filters in order: callback → regex → header removal
+    request
+    |> apply_filter_request_callback(filter_opts[:filter_request])
+    |> apply_regex_filters_to_request(filter_opts[:filter_sensitive_data] || [])
+    |> apply_request_header_filters(filter_opts[:filter_request_headers] || [])
+  end
+
+  # Apply filter_request callback
+  defp apply_filter_request_callback(request, nil), do: request
+
+  defp apply_filter_request_callback(request, callback) when is_function(callback, 1) do
+    callback.(request)
+  end
+
+  defp apply_filter_request_callback(request, _), do: request
+
+  # Apply regex filters to request body and URI/query
+  defp apply_regex_filters_to_request(request, []), do: request
+
+  defp apply_regex_filters_to_request(request, filter_patterns) do
+    request
+    |> apply_regex_to_body(filter_patterns)
+    |> apply_regex_to_uri(filter_patterns)
+    |> apply_regex_to_query(filter_patterns)
+  end
+
+  defp apply_regex_to_body(request, filter_patterns) do
+    cond do
+      Map.has_key?(request, "body_json") ->
+        # Filter JSON by serializing, filtering, deserializing
+        json_str = Jason.encode!(request["body_json"])
+        filtered_str = apply_regex_to_string(json_str, filter_patterns)
+
+        # Use tolerant decoding - if regex produces invalid JSON, fall back to original
+        # This matches the behavior in ReqCassette.Filter.apply_regex_to_body/3
+        filtered_json =
+          case Jason.decode(filtered_str) do
+            {:ok, decoded} -> decoded
+            {:error, _} -> request["body_json"]
+          end
+
+        Map.put(request, "body_json", filtered_json)
+
+      Map.has_key?(request, "body") ->
+        # Filter plain text body
+        filtered_body = apply_regex_to_string(request["body"], filter_patterns)
+        Map.put(request, "body", filtered_body)
+
+      Map.has_key?(request, "body_blob") ->
+        # Filter blob (decode, filter, re-encode)
+        blob = Base.decode64!(request["body_blob"])
+        filtered = apply_regex_to_string(blob, filter_patterns)
+        Map.put(request, "body_blob", Base.encode64(filtered))
+
+      true ->
+        request
+    end
+  end
+
+  defp apply_regex_to_uri(request, filter_patterns) do
+    filtered_uri = apply_regex_to_string(request["uri"], filter_patterns)
+    Map.put(request, "uri", filtered_uri)
+  end
+
+  defp apply_regex_to_query(request, filter_patterns) do
+    filtered_query = apply_regex_to_string(request["query_string"], filter_patterns)
+    Map.put(request, "query_string", filtered_query)
+  end
+
+  defp apply_regex_to_string(string, filter_patterns) do
+    Enum.reduce(filter_patterns, string, fn {pattern, replacement}, acc ->
+      String.replace(acc, pattern, replacement)
+    end)
+  end
+
+  # Apply header filters (remove specified headers)
+  defp apply_request_header_filters(request, []), do: request
+
+  defp apply_request_header_filters(request, filter_list) do
+    filtered_headers =
+      request["headers"]
+      |> Enum.reject(fn {key, _value} ->
+        Enum.any?(filter_list, &(String.downcase(key) == String.downcase(&1)))
+      end)
+      |> Enum.into(%{})
+
+    Map.put(request, "headers", filtered_headers)
+  end
+
+  defp build_uri(conn) do
+    scheme = to_string(conn.scheme || if(conn.port == 443, do: "https", else: "http"))
+    host = conn.host || "localhost"
+    port = conn.port || 80
+
+    # Only include port if non-standard
+    port_str =
+      cond do
+        scheme == "http" and port == 80 -> ""
+        scheme == "https" and port == 443 -> ""
+        true -> ":#{port}"
+      end
+
+    "#{scheme}://#{host}#{port_str}#{conn.request_path}"
+  end
+
+  defp headers_to_map(headers) when is_list(headers) do
+    Enum.into(headers, %{}, fn
+      {k, v} when is_list(v) -> {k, v}
+      {k, v} -> {k, [v]}
+    end)
+  end
+
+  defp headers_to_map(headers) when is_map(headers), do: headers
 
   defp cassette_path(opts) do
     dir = opts.cassette_dir || opts[:cassette_dir] || "cassettes"

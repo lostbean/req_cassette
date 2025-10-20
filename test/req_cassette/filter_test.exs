@@ -1615,4 +1615,253 @@ defmodule ReqCassette.FilterTest do
       assert response2.body["data"] == "response"
     end
   end
+
+  describe "regex filter producing invalid JSON" do
+    test "does not crash when regex replaces entire JSON body with non-JSON text" do
+      bypass = Bypass.open()
+
+      Bypass.expect_once(bypass, "POST", "/api", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{status: "ok"}))
+      end)
+
+      # This is a common pattern that replaces entire JSON body with a placeholder
+      # Prior behavior: the Filter module handled this gracefully
+      # Bug: plug.ex uses Jason.decode! which crashes on non-JSON
+      cassette_opts = [
+        cassette_dir: @cassette_dir,
+        filter_sensitive_data: [
+          # Replace entire JSON body with non-JSON text
+          {~r/.*/, "[FILTERED]"}
+        ]
+      ]
+
+      # Should not crash - should gracefully fall back to original body
+      result =
+        with_cassette("regex_invalid_json", cassette_opts, fn plug ->
+          Req.post!(
+            "http://localhost:#{bypass.port}/api",
+            json: %{secret: "sensitive_data", api_key: "key123"},
+            plug: plug
+          )
+        end)
+
+      assert result.status == 200
+    end
+
+    test "replay works when regex produces invalid JSON in request body" do
+      bypass = Bypass.open()
+
+      Bypass.expect(bypass, "POST", "/data", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{result: "success"}))
+      end)
+
+      # Filter that replaces JSON structure with non-JSON
+      cassette_opts = [
+        cassette_dir: @cassette_dir,
+        mode: :record,
+        filter_sensitive_data: [
+          {~r/\{.*\}/, "[REQUEST_BODY_FILTERED]"}
+        ],
+        # Don't match on body since we're filtering it to non-JSON
+        match_requests_on: [:method, :uri]
+      ]
+
+      # Record
+      response1 =
+        with_cassette("regex_invalid_json_replay", cassette_opts, fn plug ->
+          Req.post!(
+            "http://localhost:#{bypass.port}/data",
+            json: %{user: "alice", password: "secret123"},
+            plug: plug
+          )
+        end)
+
+      assert response1.status == 200
+
+      # Shutdown bypass to force replay
+      Bypass.down(bypass)
+
+      # Replay should work
+      response2 =
+        with_cassette("regex_invalid_json_replay", cassette_opts, fn plug ->
+          Req.post!(
+            "http://localhost:#{bypass.port}/data",
+            json: %{user: "alice", password: "secret123"},
+            plug: plug
+          )
+        end)
+
+      assert response2.status == 200
+      assert response2.body["result"] == "success"
+    end
+
+    test "gracefully handles regex that breaks JSON structure in response" do
+      bypass = Bypass.open()
+
+      Bypass.expect_once(bypass, "GET", "/sensitive", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(
+          200,
+          Jason.encode!(%{
+            data: "public_info",
+            secret_token: "sk-very-secret-token-12345",
+            internal_id: "internal-abc"
+          })
+        )
+      end)
+
+      # Filter that could potentially break JSON if not handled properly
+      cassette_opts = [
+        cassette_dir: @cassette_dir,
+        filter_sensitive_data: [
+          # This pattern matches the entire JSON and replaces with non-JSON
+          {~r/\{"data".*\}/, "[ENTIRE_RESPONSE_FILTERED]"}
+        ]
+      ]
+
+      # Should not crash
+      result =
+        with_cassette("regex_break_response_json", cassette_opts, fn plug ->
+          Req.get!("http://localhost:#{bypass.port}/sensitive", plug: plug)
+        end)
+
+      assert result.status == 200
+    end
+  end
+
+  describe "filter_request runs exactly once" do
+    test "non-idempotent filter_request is applied exactly once during recording" do
+      bypass = Bypass.open()
+
+      Bypass.expect_once(bypass, "POST", "/api", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{status: "ok"}))
+      end)
+
+      # Non-idempotent filter that appends a suffix
+      # If run twice, it would append the suffix twice
+      call_count = :counters.new(1, [:atomics])
+
+      filter_req = fn request ->
+        :counters.add(call_count, 1, 1)
+        count = :counters.get(call_count, 1)
+
+        # Append count to a field - if run twice, would show "value_1_2"
+        update_in(request, ["body_json", "marker"], fn val ->
+          "#{val}_#{count}"
+        end)
+      end
+
+      cassette_opts = [
+        cassette_dir: @cassette_dir,
+        filter_request: filter_req,
+        match_requests_on: [:method, :uri]
+      ]
+
+      with_cassette("filter_once_test", cassette_opts, fn plug ->
+        Req.post!(
+          "http://localhost:#{bypass.port}/api",
+          json: %{marker: "value", data: "test"},
+          plug: plug
+        )
+      end)
+
+      # Verify filter was called exactly once
+      assert :counters.get(call_count, 1) == 1
+
+      # Verify cassette has marker with single suffix (not double)
+      cassette_path = Path.join(@cassette_dir, "filter_once_test.json")
+      {:ok, data} = File.read(cassette_path)
+      {:ok, cassette} = Jason.decode(data)
+      interaction = hd(cassette["interactions"])
+
+      # Should be "value_1", NOT "value_1_2" (which would indicate double application)
+      assert interaction["request"]["body_json"]["marker"] == "value_1"
+    end
+
+    test "non-idempotent regex filter is applied exactly once to request" do
+      bypass = Bypass.open()
+
+      Bypass.expect_once(bypass, "POST", "/data", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{result: "success"}))
+      end)
+
+      # Regex that appends [FILTERED] - if run twice would produce [FILTERED][FILTERED]
+      cassette_opts = [
+        cassette_dir: @cassette_dir,
+        filter_sensitive_data: [
+          {~r/(secret_value)/, "\\1[FILTERED]"}
+        ],
+        match_requests_on: [:method, :uri]
+      ]
+
+      with_cassette("regex_once_test", cassette_opts, fn plug ->
+        Req.post!(
+          "http://localhost:#{bypass.port}/data",
+          json: %{password: "secret_value", user: "alice"},
+          plug: plug
+        )
+      end)
+
+      # Verify cassette has single [FILTERED] suffix, not double
+      cassette_path = Path.join(@cassette_dir, "regex_once_test.json")
+      {:ok, data} = File.read(cassette_path)
+      {:ok, cassette} = Jason.decode(data)
+      interaction = hd(cassette["interactions"])
+
+      # Should be "secret_value[FILTERED]", NOT "secret_value[FILTERED][FILTERED]"
+      assert interaction["request"]["body_json"]["password"] == "secret_value[FILTERED]"
+    end
+
+    test "filter_request that deletes a key does not crash on second pass" do
+      bypass = Bypass.open()
+
+      Bypass.expect_once(bypass, "POST", "/submit", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{submitted: true}))
+      end)
+
+      # Filter that deletes a key - would crash or behave unexpectedly if run twice
+      filter_req = fn request ->
+        {_deleted, updated} = pop_in(request, ["body_json", "to_delete"])
+        updated
+      end
+
+      cassette_opts = [
+        cassette_dir: @cassette_dir,
+        filter_request: filter_req,
+        match_requests_on: [:method, :uri]
+      ]
+
+      # Should not crash
+      result =
+        with_cassette("filter_delete_key_test", cassette_opts, fn plug ->
+          Req.post!(
+            "http://localhost:#{bypass.port}/submit",
+            json: %{to_delete: "sensitive", keep: "public"},
+            plug: plug
+          )
+        end)
+
+      assert result.status == 200
+
+      # Verify key was deleted
+      cassette_path = Path.join(@cassette_dir, "filter_delete_key_test.json")
+      {:ok, data} = File.read(cassette_path)
+      {:ok, cassette} = Jason.decode(data)
+      interaction = hd(cassette["interactions"])
+
+      refute Map.has_key?(interaction["request"]["body_json"], "to_delete")
+      assert interaction["request"]["body_json"]["keep"] == "public"
+    end
+  end
 end

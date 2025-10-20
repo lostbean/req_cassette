@@ -12,11 +12,11 @@ defmodule ReqCassette.CassetteFormatTest do
     :ok
   end
 
-  describe "v1.0 format" do
-    test "creates cassettes with version 1.0" do
+  describe "v2.0 format" do
+    test "creates cassettes with version 2.0" do
       cassette = Cassette.new()
 
-      assert cassette["version"] == "1.0"
+      assert cassette["version"] == "2.0"
       assert cassette["interactions"] == []
     end
 
@@ -31,7 +31,7 @@ defmodule ReqCassette.CassetteFormatTest do
       # Verify it's pretty-printed (multi-line with indentation)
       assert String.contains?(content, "\n")
       assert String.contains?(content, "  ")
-      assert String.contains?(content, ~s("version": "1.0"))
+      assert String.contains?(content, ~s("version": "2.0"))
     end
 
     test "includes full request metadata in interactions" do
@@ -91,7 +91,7 @@ defmodule ReqCassette.CassetteFormatTest do
       # Load and verify migration
       {:ok, migrated} = Cassette.load(path)
 
-      assert migrated["version"] == "1.0"
+      assert migrated["version"] == "2.0"
       assert is_list(migrated["interactions"])
       assert length(migrated["interactions"]) == 1
 
@@ -107,7 +107,7 @@ defmodule ReqCassette.CassetteFormatTest do
       assert interaction["recorded_at"] == "MIGRATED_FROM_V0.1"
     end
 
-    test "loads v1.0 cassettes without migration" do
+    test "loads v1.0 cassettes and migrates to v2.0" do
       # Create a proper v1.0 cassette
       v10_cassette = %{
         "version" => "1.0",
@@ -135,10 +135,19 @@ defmodule ReqCassette.CassetteFormatTest do
       path = Path.join(@cassette_dir, "v10.json")
       File.write!(path, Jason.encode!(v10_cassette))
 
-      # Load and verify no migration needed
+      # Load and verify migration to v2.0
       {:ok, loaded} = Cassette.load(path)
 
-      assert loaded == v10_cassette
+      # Should be migrated to v2.0 in memory
+      assert loaded["version"] == "2.0"
+      assert length(loaded["interactions"]) == 1
+
+      # Interaction data should be preserved
+      interaction = List.first(loaded["interactions"])
+      assert interaction["request"]["method"] == "GET"
+      assert interaction["request"]["uri"] == "http://example.com/api"
+      assert interaction["response"]["status"] == 200
+      assert interaction["response"]["body"] == "OK"
     end
   end
 

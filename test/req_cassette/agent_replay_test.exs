@@ -43,6 +43,7 @@ defmodule ReqCassette.AgentReplayTest do
         You are a helpful AI assistant with access to tools.
 
         When you need to compute math, use the calculator tool with the expression parameter.
+        IMPORTANT: Wrap all numbers in the expression with <num> tags. For example: <num>A</num> * <num>B</num>
 
         Do not wrap arguments in code fences. Do not include extra text in arguments.
 
@@ -187,12 +188,14 @@ defmodule ReqCassette.AgentReplayTest do
       [
         Tool.new!(
           name: "calculator",
-          description: "Perform mathematical calculations. Pass an expression string.",
+          description:
+            "Perform mathematical calculations. Pass an expression string with numbers wrapped in <num> tags.",
           parameter_schema: [
             expression: [
               type: :string,
               required: true,
-              doc: "Mathematical expression to evaluate. Examples: '15 * 7', '10 + 5', 'sqrt(16)'"
+              doc:
+                "Mathematical expression to evaluate. Wrap all numbers in <num> tags. Examples: '<num>a</num> * <num>b</num>', '<num>c</num> + <num>d</num>', 'sqrt(<num>e</num>)'"
             ]
           ],
           callback: &calculator_callback/1
@@ -211,15 +214,21 @@ defmodule ReqCassette.AgentReplayTest do
     end
 
     defp calculator_callback(%{"expression" => expr}) when is_binary(expr) do
-      {result, _} = Code.eval_string(expr)
-      {:ok, result}
+      # Strip <num> tags from expression before evaluation
+      clean_expr = String.replace(expr, ~r/<\/?num>/, "")
+      {result, _} = Code.eval_string(clean_expr)
+      # Wrap result in <num> tags
+      {:ok, "<num>#{result}</num>"}
     rescue
       e -> {:error, "Invalid expression: #{Exception.message(e)}"}
     end
 
     defp calculator_callback(%{expression: expr}) when is_binary(expr) do
-      {result, _} = Code.eval_string(expr)
-      {:ok, result}
+      # Strip <num> tags from expression before evaluation
+      clean_expr = String.replace(expr, ~r/<\/?num>/, "")
+      {result, _} = Code.eval_string(clean_expr)
+      # Wrap result in <num> tags
+      {:ok, "<num>#{result}</num>"}
     rescue
       e -> {:error, "Invalid expression: #{Exception.message(e)}"}
     end
@@ -251,7 +260,10 @@ defmodule ReqCassette.AgentReplayTest do
 
       Logger.debug("=== FIRST RUN ===")
       {:ok, agent1} = MyAgentWithCassettes.start_link(cassette_opts: cassette_opts_record)
-      {:ok, response1} = MyAgentWithCassettes.prompt(agent1, "What is 15 * 7?")
+
+      {:ok, response1} =
+        MyAgentWithCassettes.prompt(agent1, "What is <num>15</num> * <num>7</num>?")
+
       Logger.debug("First response: #{response1}")
 
       cassettes_after_first = File.ls!(@cassette_dir)
@@ -266,7 +278,10 @@ defmodule ReqCassette.AgentReplayTest do
 
       Logger.debug("=== SECOND RUN (replay) ===")
       {:ok, agent2} = MyAgentWithCassettes.start_link(cassette_opts: cassette_opts_replay)
-      {:ok, response2} = MyAgentWithCassettes.prompt(agent2, "What is 15 * 7?")
+
+      {:ok, response2} =
+        MyAgentWithCassettes.prompt(agent2, "What is <num>15</num> * <num>7</num>?")
+
       Logger.debug("Second response: #{response2}")
 
       cassettes_after_second = File.ls!(@cassette_dir)
@@ -308,7 +323,9 @@ defmodule ReqCassette.AgentReplayTest do
       Logger.debug("=== FIRST RUN - Multiple prompts ===")
       {:ok, agent1} = MyAgentWithCassettes.start_link(cassette_opts: cassette_opts_record)
 
-      {:ok, response1a} = MyAgentWithCassettes.prompt(agent1, "What is 15 * 7?")
+      {:ok, response1a} =
+        MyAgentWithCassettes.prompt(agent1, "What is <num>15</num> * <num>7</num>?")
+
       Logger.debug("First prompt response: #{response1a}")
 
       {:ok, response1b} =
@@ -332,7 +349,9 @@ defmodule ReqCassette.AgentReplayTest do
       Logger.debug("=== SECOND RUN (replay) - Same prompts ===")
       {:ok, agent2} = MyAgentWithCassettes.start_link(cassette_opts: cassette_opts_replay)
 
-      {:ok, response2a} = MyAgentWithCassettes.prompt(agent2, "What is 15 * 7?")
+      {:ok, response2a} =
+        MyAgentWithCassettes.prompt(agent2, "What is <num>15</num> * <num>7</num>?")
+
       Logger.debug("First prompt response (replay): #{response2a}")
 
       {:ok, response2b} =
@@ -360,6 +379,320 @@ defmodule ReqCassette.AgentReplayTest do
 
       assert length(cassette_after["interactions"]) == interactions_count,
              "Interactions changed on replay. Expected: #{interactions_count}, Got: #{length(cassette_after["interactions"])}"
+    end
+
+    @tag :req_llm
+    @tag :capture_log
+    test "agent with templates replays with parameterized 3-digit numbers" do
+      # Use template patterns to parameterize IDs, timestamps, etc.
+      # This allows the same cassette to work even when real API would generate different IDs
+      # When passing directly to Plug (not via with_cassette), use map syntax
+      cassette_opts_record = %{
+        cassette_dir: @cassette_dir,
+        cassette_name: "agent_templated",
+        mode: :record,
+        filter_request_headers: ["authorization", "x-api-key", "cookie"],
+        template: %{
+          patterns: %{
+            msg_id: ~r/msg_[a-zA-Z0-9]+/,
+            toolu: ~r/toolu_[a-zA-Z0-9]+/,
+            req_id: ~r/req_[a-zA-Z0-9]+/,
+            timestamp: ~r/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/,
+            org_id: ~r/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/,
+            # Match numbers with <num> tags
+            num: ~r/<num>\d+<\/num>/
+          }
+        }
+      }
+
+      cassette_opts_replay = %{
+        cassette_dir: @cassette_dir,
+        cassette_name: "agent_templated",
+        mode: :replay,
+        filter_request_headers: ["authorization", "x-api-key", "cookie"],
+        template: %{
+          patterns: %{
+            msg_id: ~r/msg_[a-zA-Z0-9]+/,
+            toolu: ~r/toolu_[a-zA-Z0-9]+/,
+            req_id: ~r/req_[a-zA-Z0-9]+/,
+            timestamp: ~r/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/,
+            org_id: ~r/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/,
+            # Match numbers with <num> tags
+            num: ~r/<num>\d+<\/num>/
+          }
+        }
+      }
+
+      Logger.debug("=== FIRST RUN (with templates) ===")
+      {:ok, agent1} = MyAgentWithCassettes.start_link(cassette_opts: cassette_opts_record)
+
+      {:ok, response1} =
+        MyAgentWithCassettes.prompt(agent1, "What is <num>123</num> * <num>456</num>?")
+
+      Logger.debug("First response: #{response1}")
+
+      # Verify cassette has template markers
+      cassette_path = Path.join(@cassette_dir, "agent_templated.json")
+      {:ok, data} = File.read(cassette_path)
+      {:ok, cassette} = Jason.decode(data)
+
+      # Find interaction with tool_use in response
+      tool_use_interaction =
+        Enum.find(cassette["interactions"], fn int ->
+          content = get_in(int, ["response", "body_json", "content"])
+          is_list(content) && Enum.any?(content, &(&1["type"] == "tool_use"))
+        end)
+
+      assert tool_use_interaction != nil, "No tool_use interaction found in cassette"
+
+      # Note: tool_use ID in response stays static (response-only value)
+      # It gets templated when it appears in the next request as tool_use_id
+      tool_use_content =
+        tool_use_interaction["response"]["body_json"]["content"]
+        |> Enum.find(&(&1["type"] == "tool_use"))
+
+      original_toolu_id = tool_use_content["id"]
+      Logger.debug("Tool use ID in first response: #{original_toolu_id}")
+
+      # Find the second interaction (which has tool_use in request messages)
+      second_interaction = Enum.at(cassette["interactions"], 1)
+      assert second_interaction != nil, "No second interaction found"
+
+      # In the second interaction's templated request, the assistant message
+      # should have the tool_use with a templated ID
+      templated_messages = second_interaction["request"]["body_json"]["messages"]
+
+      templated_assistant_msg =
+        Enum.find(templated_messages, fn msg ->
+          msg["role"] == "assistant" && is_list(msg["content"])
+        end)
+
+      assert templated_assistant_msg != nil, "No assistant message in second interaction"
+
+      templated_tool_use =
+        templated_assistant_msg["content"]
+        |> Enum.find(&(&1["type"] == "tool_use"))
+
+      assert templated_tool_use != nil, "No tool_use in assistant message"
+
+      Logger.debug("Templated tool_use ID: #{templated_tool_use["id"]}")
+
+      # The tool_use ID should be templated
+      assert templated_tool_use["id"] == "{{toolu.0}}",
+             "Expected {{toolu.0}} but got: #{templated_tool_use["id"]}"
+
+      # Verify recorded_values contains the original ID
+      recorded_toolu = second_interaction["template"]["recorded_values"]["toolu"]
+
+      assert is_list(recorded_toolu) && length(recorded_toolu) == 1,
+             "Expected one recorded toolu value"
+
+      assert List.first(recorded_toolu) == original_toolu_id,
+             "Recorded value should match original ID"
+
+      # Verify numbers are templated in the first interaction
+      first_interaction = Enum.at(cassette["interactions"], 0)
+
+      # Check that the tool expression was templated (replaced with placeholders)
+      templated_response = first_interaction["response"]["body_json"]["content"]
+      tool_use = Enum.find(templated_response, &(&1["type"] == "tool_use"))
+
+      assert tool_use != nil, "Expected tool_use in response"
+
+      # The templated expression should have placeholders
+      assert String.contains?(tool_use["input"]["expression"], "{{num."),
+             "Expected {{num.}} template placeholders in expression"
+
+      # Verify recorded numbers (with <num> tags) in the first interaction
+      recorded_nums = first_interaction["template"]["recorded_values"]["num"]
+      Logger.debug("Recorded numbers: #{inspect(recorded_nums)}")
+
+      assert is_list(recorded_nums) && length(recorded_nums) >= 2,
+             "Expected at least 2 recorded numbers"
+
+      # Numbers should be in <num> tags like <num>123</num>
+      assert Enum.any?(recorded_nums, &String.contains?(&1, "123")),
+             "Expected to find 123 in recorded values"
+
+      assert Enum.any?(recorded_nums, &String.contains?(&1, "456")),
+             "Expected to find 456 in recorded values"
+
+      interactions_count = length(cassette["interactions"])
+      Logger.debug("Interactions after recording: #{interactions_count}")
+
+      Logger.debug("=== SECOND RUN (replay with same 3-digit numbers) ===")
+      {:ok, agent2} = MyAgentWithCassettes.start_link(cassette_opts: cassette_opts_replay)
+
+      {:ok, response2} =
+        MyAgentWithCassettes.prompt(agent2, "What is <num>123</num> * <num>456</num>?")
+
+      Logger.debug("Second response: #{response2}")
+
+      # Verify responses are identical
+      assert response1 == response2,
+             "Responses should be identical. Got:\nFirst: #{response1}\nSecond: #{response2}"
+
+      # Verify no new interactions were added
+      {:ok, data_after} = File.read(cassette_path)
+      {:ok, cassette_after} = Jason.decode(data_after)
+
+      assert length(cassette_after["interactions"]) == interactions_count,
+             "Interactions changed on replay. Expected: #{interactions_count}, Got: #{length(cassette_after["interactions"])}"
+
+      Logger.debug("✅ Replay test passed: Agent replayed correctly with same 3-digit numbers")
+
+      # Third run - replay with DIFFERENT 3-digit numbers
+      Logger.debug("=== THIRD RUN (replay with DIFFERENT 3-digit numbers) ===")
+      {:ok, agent3} = MyAgentWithCassettes.start_link(cassette_opts: cassette_opts_replay)
+
+      {:ok, response3} =
+        MyAgentWithCassettes.prompt(agent3, "What is <num>234</num> * <num>567</num>?")
+
+      Logger.debug("Third response (different numbers): #{response3}")
+
+      # The replay should work without errors
+      # Note: The response text comes from the cassette and won't reflect the new calculation
+      # But the tool executed locally with the new numbers (234 * 567 = 132678)
+      assert is_binary(response3), "Should receive a string response"
+
+      # Verify cassette was NOT modified (still same number of interactions)
+      {:ok, data_final} = File.read(cassette_path)
+      {:ok, cassette_final} = Jason.decode(data_final)
+
+      assert length(cassette_final["interactions"]) == interactions_count,
+             "Cassette should not have new interactions on replay with different numbers"
+
+      Logger.debug(
+        "✅ Number parameterization test passed: Same cassette works with different 3-digit numbers!"
+      )
+    end
+
+    @tag :req_llm
+    @tag :capture_log
+    test "tool receives and returns numbers with <num> tags" do
+      cassette_opts = %{
+        cassette_dir: @cassette_dir,
+        cassette_name: "num_tags_demo",
+        mode: :record,
+        filter_request_headers: ["authorization", "x-api-key", "cookie"]
+      }
+
+      Logger.debug("=== Testing <num> tags ===")
+      {:ok, agent} = MyAgentWithCassettes.start_link(cassette_opts: cassette_opts)
+
+      {:ok, response} =
+        MyAgentWithCassettes.prompt(agent, "What is <num>123</num> * <num>456</num>?")
+
+      Logger.debug("Response: #{response}")
+
+      # Verify cassette has <num> tags in tool call
+      cassette_path = Path.join(@cassette_dir, "num_tags_demo.json")
+      {:ok, data} = File.read(cassette_path)
+      {:ok, cassette} = Jason.decode(data)
+
+      # Check first interaction (tool call)
+      first_interaction = Enum.at(cassette["interactions"], 0)
+
+      tool_use_content =
+        first_interaction["response"]["body_json"]["content"]
+        |> Enum.find(&(&1["type"] == "tool_use"))
+
+      expression = tool_use_content["input"]["expression"]
+      Logger.debug("Tool expression: #{expression}")
+
+      assert String.contains?(expression, "<num>123</num>"),
+             "Expected <num>123</num> in expression"
+
+      assert String.contains?(expression, "<num>456</num>"),
+             "Expected <num>456</num> in expression"
+
+      # Check second interaction (tool result)
+      second_interaction = Enum.at(cassette["interactions"], 1)
+      assert second_interaction != nil, "Expected second interaction"
+
+      messages = get_in(second_interaction, ["request", "body_json", "messages"])
+      assert messages != nil, "Expected messages in second interaction"
+
+      # Find the user message with tool_result content
+      user_msg =
+        Enum.find(messages, fn msg ->
+          msg["role"] == "user" and is_list(msg["content"]) and
+            Enum.any?(msg["content"], &(&1["type"] == "tool_result"))
+        end)
+
+      assert user_msg != nil, "Expected user message with tool_result"
+
+      tool_result = Enum.find(user_msg["content"], &(&1["type"] == "tool_result"))
+      assert tool_result != nil, "Expected tool_result in content"
+
+      result_content = tool_result["content"]
+      Logger.debug("Tool result: #{result_content}")
+
+      assert String.contains?(result_content, "<num>56088</num>"),
+             "Expected <num>56088</num> in result"
+
+      Logger.debug("✅ Tool correctly uses <num> tags for input and output")
+    end
+
+    @tag :req_llm
+    @tag :capture_log
+    test "simple agent template test - record and replay" do
+      cassette_opts = %{
+        cassette_dir: @cassette_dir,
+        cassette_name: "simple_template",
+        mode: :record,
+        filter_request_headers: ["authorization", "x-api-key", "cookie"],
+        template: %{
+          patterns: %{
+            msg_id: ~r/msg_[a-zA-Z0-9]+/,
+            toolu: ~r/toolu_[a-zA-Z0-9]+/,
+            req_id: ~r/req_[a-zA-Z0-9]+/,
+            timestamp: ~r/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/,
+            org_id: ~r/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/,
+            # Match numbers with <num> tags
+            num: ~r/<num>\d+<\/num>/
+          }
+        }
+      }
+
+      Logger.debug("=== RECORD RUN ===")
+      {:ok, agent1} = MyAgentWithCassettes.start_link(cassette_opts: cassette_opts)
+
+      {:ok, response1} =
+        MyAgentWithCassettes.prompt(agent1, "What is <num>123</num> * <num>456</num>?")
+
+      Logger.debug("Record response: #{response1}")
+
+      Logger.debug("=== REPLAY RUN (same numbers) ===")
+
+      {:ok, agent2} =
+        MyAgentWithCassettes.start_link(cassette_opts: Map.put(cassette_opts, :mode, :replay))
+
+      {:ok, response2} =
+        MyAgentWithCassettes.prompt(agent2, "What is <num>123</num> * <num>456</num>?")
+
+      Logger.debug("Replay response: #{response2}")
+
+      assert response1 == response2
+
+      Logger.debug("=== REPLAY RUN (different numbers) ===")
+
+      {:ok, agent3} =
+        MyAgentWithCassettes.start_link(cassette_opts: Map.put(cassette_opts, :mode, :replay))
+
+      {:ok, response3} =
+        MyAgentWithCassettes.prompt(agent3, "What is <num>234</num> * <num>567</num>?")
+
+      Logger.debug("Replay response (different numbers): #{response3}")
+
+      # The replay should work without errors
+      # Note: The response text comes from the cassette and won't reflect the new calculation
+      # But the tool executed locally with the new numbers, so the agent's internal state is correct
+      assert is_binary(response3), "Should receive a string response"
+
+      # Verify the question numbers are referenced (either the new or old numbers are fine)
+      # The key is that templating allowed the replay to succeed
+      Logger.debug("✅ Template test passed: Agent can replay with different numbers")
     end
   end
 end

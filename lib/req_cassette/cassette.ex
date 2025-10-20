@@ -139,8 +139,12 @@ defmodule ReqCassette.Cassette do
 
   alias ReqCassette.BodyType
   alias ReqCassette.Filter
+  alias ReqCassette.Template.Normalizer
+  alias ReqCassette.Template.Extractor
+  alias ReqCassette.Template.Replacer
+  alias ReqCassette.Template.Matcher
 
-  @version "1.0"
+  @version "2.0"
 
   @typedoc "A cassette file containing multiple interactions"
   @type t :: %{
@@ -259,15 +263,48 @@ defmodule ReqCassette.Cassette do
       }
       cassette = add_interaction(cassette, conn, body, response, opts)
   """
-  @spec add_interaction(map(), Plug.Conn.t(), binary(), Req.Response.t(), map()) :: map()
-  def add_interaction(cassette, conn, request_body, response, opts \\ %{}) do
-    interaction = build_interaction(conn, request_body, response)
+  # New signature: accepts pre-filtered request map
+  @spec add_interaction(map(), map(), Req.Response.t(), map()) :: map()
+  def add_interaction(cassette, filtered_request, response, opts)
+      when is_map(filtered_request) and is_struct(response) do
+    # Build interaction from already-filtered request
+    interaction = build_interaction_from_filtered(filtered_request, response)
 
-    # Apply filters before adding to cassette
-    filtered_interaction = Filter.apply_filters(interaction, opts)
+    # Apply only response filters (request already filtered at entry point)
+    # This prevents non-idempotent request filters from running twice
+    filtered_interaction = Filter.apply_response_only_filters(interaction, opts)
+
+    # Apply templates if configured
+    final_interaction =
+      if opts[:template] do
+        apply_template_to_interaction(filtered_interaction, opts[:template])
+      else
+        filtered_interaction
+      end
 
     Map.update!(cassette, "interactions", fn interactions ->
-      interactions ++ [filtered_interaction]
+      interactions ++ [final_interaction]
+    end)
+  end
+
+  # Backward compatibility: old signature with conn and body
+  def add_interaction(cassette, %Plug.Conn{} = conn, request_body, response, opts \\ %{}) do
+    # Build interaction the old way
+    interaction = build_interaction(conn, request_body, response)
+
+    # Apply filters BEFORE template extraction (critical!)
+    filtered_interaction = Filter.apply_filters(interaction, opts)
+
+    # Apply templates if configured
+    final_interaction =
+      if opts[:template] do
+        apply_template_to_interaction(filtered_interaction, opts[:template])
+      else
+        filtered_interaction
+      end
+
+    Map.update!(cassette, "interactions", fn interactions ->
+      interactions ++ [final_interaction]
     end)
   end
 
@@ -360,14 +397,25 @@ defmodule ReqCassette.Cassette do
       find_interaction(cassette, conn_post, post_body, [:method, :uri, :body])
       #=> {:ok, resp_post}
   """
-  @spec find_interaction(map(), Plug.Conn.t(), binary(), [atom()], map()) ::
-          {:ok, map()} | :not_found
-  def find_interaction(cassette, conn, request_body, match_on, filter_opts \\ %{}) do
+  @spec find_interaction(map(), map(), [atom()]) :: {:ok, map()} | :not_found
+  def find_interaction(cassette, filtered_request, match_on) do
     interactions = Map.get(cassette, "interactions", [])
 
     Enum.find_value(interactions, :not_found, fn interaction ->
-      if interaction_matches?(interaction, conn, request_body, match_on, filter_opts) do
-        {:ok, interaction["response"]}
+      cond do
+        # Use template matching if interaction has templates enabled
+        interaction["template"] && interaction["template"]["enabled"] ->
+          case try_template_match(interaction, filtered_request) do
+            {:ok, response} -> {:ok, response}
+            # Continue searching
+            :no_match -> nil
+          end
+
+        # No templates, use standard exact matching
+        true ->
+          if interaction_matches?(interaction, filtered_request, match_on) do
+            {:ok, interaction["response"]}
+          end
       end
     end)
   end
@@ -482,7 +530,9 @@ defmodule ReqCassette.Cassette do
   end
 
   @doc """
-  Saves a cassette to disk as pretty-printed JSON.
+  Saves a cassette to disk as pretty-printed JSON in v2.0 format.
+
+  Always saves as v2.0 format with sorted JSON for consistency and git-friendliness.
 
   ## Parameters
 
@@ -495,15 +545,30 @@ defmodule ReqCassette.Cassette do
   """
   @spec save(String.t(), map()) :: :ok
   def save(path, cassette) do
+    # Ensure we're saving as v2.0
+    cassette_v2 = Map.put(cassette, "version", @version)
+
+    # Normalize all interactions (sort JSON) before saving
+    normalized_interactions =
+      Enum.map(cassette_v2["interactions"] || [], &normalize_interaction_for_save/1)
+
+    cassette_final = Map.put(cassette_v2, "interactions", normalized_interactions)
+
     File.mkdir_p!(Path.dirname(path))
-    json = Jason.encode!(cassette, pretty: true)
+    json = Jason.encode!(cassette_final, pretty: true)
     File.write!(path, json)
   end
 
   @doc """
   Loads a cassette from disk.
 
-  Supports both v1.0 and v0.1 formats for backward compatibility.
+  Supports v2.0 (with templates), v1.0, and v0.1 formats for backward compatibility.
+
+  ## Version Handling
+
+  - **v2.0** - Latest format with template support and sorted JSON (loaded as-is)
+  - **v1.0** - Previous format, normalized to v2.0 in memory (JSON sorted on load)
+  - **v0.1** - Legacy format, migrated to v2.0
 
   ## Parameters
 
@@ -511,13 +576,13 @@ defmodule ReqCassette.Cassette do
 
   ## Returns
 
-  - `{:ok, cassette}` - Successfully loaded cassette (migrated to v1.0 if needed)
+  - `{:ok, cassette}` - Successfully loaded cassette (normalized to v2.0 if needed)
   - `:not_found` - File doesn't exist or can't be parsed
 
   ## Examples
 
       load("/path/to/cassette.json")
-      # => {:ok, %{"version" => "1.0", "interactions" => [...]}}
+      # => {:ok, %{"version" => "2.0", "interactions" => [...]}}
 
       load("/path/to/missing.json")
       # => :not_found
@@ -667,119 +732,6 @@ defmodule ReqCassette.Cassette do
 
   defp truncate_value(str), do: str
 
-  defp build_interaction(conn, request_body, response) do
-    req_body_type = BodyType.detect_type(request_body, conn.req_headers |> headers_to_map())
-    {req_body_field, req_body_value} = BodyType.encode(request_body, req_body_type)
-
-    resp_body_type = BodyType.detect_type(response.body, response.headers)
-    {resp_body_field, resp_body_value} = BodyType.encode(response.body, resp_body_type)
-
-    %{
-      "request" => %{
-        "method" => conn.method,
-        "uri" => build_uri(conn),
-        "query_string" => conn.query_string,
-        "headers" => conn.req_headers |> headers_to_map(),
-        "body_type" => to_string(req_body_type),
-        req_body_field => req_body_value
-      },
-      "response" => %{
-        "status" => response.status,
-        "headers" => response.headers,
-        "body_type" => to_string(resp_body_type),
-        resp_body_field => resp_body_value
-      },
-      "recorded_at" => DateTime.utc_now() |> DateTime.to_iso8601()
-    }
-  end
-
-  defp build_uri(conn) do
-    scheme = to_string(conn.scheme || if(conn.port == 443, do: "https", else: "http"))
-    host = conn.host || "localhost"
-    port = conn.port || 80
-
-    # Only include port if non-standard
-    port_str =
-      cond do
-        scheme == "http" and port == 80 -> ""
-        scheme == "https" and port == 443 -> ""
-        true -> ":#{port}"
-      end
-
-    "#{scheme}://#{host}#{port_str}#{conn.request_path}"
-  end
-
-  defp headers_to_map(headers) when is_list(headers) do
-    Enum.into(headers, %{}, fn
-      {k, v} when is_list(v) -> {k, v}
-      {k, v} -> {k, [v]}
-    end)
-  end
-
-  defp interaction_matches?(interaction, conn, request_body, match_on, filter_opts) do
-    request = interaction["request"]
-
-    # Build incoming request structure and apply filter_request callback if present
-    incoming_request = build_incoming_request(conn, request_body, filter_opts)
-
-    Enum.all?(match_on, fn matcher ->
-      case matcher do
-        :method ->
-          String.upcase(request["method"]) == String.upcase(incoming_request["method"])
-
-        :uri ->
-          # Apply regex filters to incoming URI for comparison
-          filtered_incoming_uri =
-            apply_regex_filters_to_string(
-              incoming_request["uri"],
-              filter_opts[:filter_sensitive_data] || []
-            )
-
-          filtered_incoming_uri == request["uri"]
-
-        :query ->
-          # Apply regex filters to query string
-          filtered_incoming_query =
-            apply_regex_filters_to_string(
-              incoming_request["query_string"],
-              filter_opts[:filter_sensitive_data] || []
-            )
-
-          normalize_query(request["query_string"]) == normalize_query(filtered_incoming_query)
-
-        :headers ->
-          # Apply header filters to incoming headers before comparing
-          filtered_incoming_headers =
-            apply_header_filters(
-              incoming_request["headers"],
-              filter_opts[:filter_request_headers] || []
-            )
-
-          normalize_headers(request["headers"]) == normalize_headers(filtered_incoming_headers)
-
-        :body ->
-          # For JSON bodies, compare normalized JSON
-          # For other bodies, compare as strings
-          # Apply filters to incoming body before comparing
-
-          # Extract body from incoming_request (could be body, body_json, or body_blob)
-          incoming_body = reconstruct_request_body(incoming_request)
-
-          filtered_body =
-            apply_regex_filters_to_string(
-              incoming_body,
-              filter_opts[:filter_sensitive_data] || []
-            )
-
-          bodies_match?(request, filtered_body, conn.req_headers)
-
-        _ ->
-          true
-      end
-    end)
-  end
-
-  # Build incoming request structure and apply filter_request callback
   defp build_incoming_request(conn, request_body, filter_opts) do
     # Detect body type and encode it the same way as build_interaction does
     body_type = BodyType.detect_type(request_body, headers_to_map(conn.req_headers))
@@ -870,6 +822,130 @@ defmodule ReqCassette.Cassette do
     end
   end
 
+  defp build_interaction(conn, request_body, response) do
+    req_body_type = BodyType.detect_type(request_body, conn.req_headers |> headers_to_map())
+    {req_body_field, req_body_value} = BodyType.encode(request_body, req_body_type)
+
+    resp_body_type = BodyType.detect_type(response.body, response.headers)
+    {resp_body_field, resp_body_value} = BodyType.encode(response.body, resp_body_type)
+
+    %{
+      "request" => %{
+        "method" => conn.method,
+        "uri" => build_uri(conn),
+        "query_string" => conn.query_string,
+        "headers" => conn.req_headers |> headers_to_map(),
+        "body_type" => to_string(req_body_type),
+        req_body_field => req_body_value
+      },
+      "response" => %{
+        "status" => response.status,
+        "headers" => response.headers,
+        "body_type" => to_string(resp_body_type),
+        resp_body_field => resp_body_value
+      },
+      "recorded_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+  end
+
+  # Build interaction from already-filtered request
+  defp build_interaction_from_filtered(filtered_request, response) do
+    resp_body_type = BodyType.detect_type(response.body, response.headers)
+    {resp_body_field, resp_body_value} = BodyType.encode(response.body, resp_body_type)
+
+    %{
+      "request" => filtered_request,
+      "response" => %{
+        "status" => response.status,
+        "headers" => response.headers,
+        "body_type" => to_string(resp_body_type),
+        resp_body_field => resp_body_value
+      },
+      "recorded_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+  end
+
+  defp headers_to_map(headers) when is_list(headers) do
+    Enum.into(headers, %{}, fn
+      {k, v} when is_list(v) -> {k, v}
+      {k, v} -> {k, [v]}
+    end)
+  end
+
+  defp interaction_matches?(interaction_or_request, filtered_request, match_on) do
+    # Handle both full interaction objects and standalone request objects
+    request =
+      if Map.has_key?(interaction_or_request, "request") do
+        interaction_or_request["request"]
+      else
+        interaction_or_request
+      end
+
+    # filtered_request is already filtered, so just compare directly
+    Enum.all?(match_on, fn matcher ->
+      case matcher do
+        :method ->
+          String.upcase(request["method"]) == String.upcase(filtered_request["method"])
+
+        :uri ->
+          request["uri"] == filtered_request["uri"]
+
+        :query ->
+          normalize_query(request["query_string"]) ==
+            normalize_query(filtered_request["query_string"])
+
+        :headers ->
+          normalize_headers(request["headers"]) == normalize_headers(filtered_request["headers"])
+
+        :body ->
+          # For JSON bodies, compare normalized JSON
+          # For other bodies, compare as strings
+          bodies_match_filtered?(request, filtered_request)
+
+        _ ->
+          true
+      end
+    end)
+  end
+
+  # Compare bodies for filtered requests (both are already in request map format)
+  defp bodies_match_filtered?(cassette_request, filtered_request) do
+    cond do
+      Map.has_key?(cassette_request, "body_json") and Map.has_key?(filtered_request, "body_json") ->
+        # Both are JSON - normalize and compare
+        normalize_json(cassette_request["body_json"]) ==
+          normalize_json(filtered_request["body_json"])
+
+      Map.has_key?(cassette_request, "body") and Map.has_key?(filtered_request, "body") ->
+        # Both are plain text
+        cassette_request["body"] == filtered_request["body"]
+
+      Map.has_key?(cassette_request, "body_blob") and Map.has_key?(filtered_request, "body_blob") ->
+        # Both are blobs
+        cassette_request["body_blob"] == filtered_request["body_blob"]
+
+      true ->
+        # Different body types or both empty - consider not matching
+        false
+    end
+  end
+
+  defp build_uri(conn) do
+    scheme = to_string(conn.scheme || if(conn.port == 443, do: "https", else: "http"))
+    host = conn.host || "localhost"
+    port = conn.port || 80
+
+    # Only include port if non-standard
+    port_str =
+      cond do
+        scheme == "http" and port == 80 -> ""
+        scheme == "https" and port == 443 -> ""
+        true -> ":#{port}"
+      end
+
+    "#{scheme}://#{host}#{port_str}#{conn.request_path}"
+  end
+
   defp normalize_query(""), do: %{}
 
   defp normalize_query(query_string) do
@@ -914,8 +990,120 @@ defmodule ReqCassette.Cassette do
 
   defp normalize_json(body), do: body
 
-  # Migrate v0.1 cassettes to v1.0 format
-  defp migrate_if_needed(%{"version" => "1.0"} = cassette), do: cassette
+  # Try to match an incoming request against a templated interaction
+  defp try_template_match(interaction, filtered_request) do
+    # 1. Normalize incoming request (already filtered)
+    normalized_incoming = Normalizer.normalize_request(filtered_request)
+
+    # 2. Deserialize patterns from cassette
+    patterns = deserialize_patterns(interaction["template"]["patterns"] || %{})
+
+    # 3. Extract variables from incoming request
+    incoming_vars = Extractor.extract_from_request(normalized_incoming, patterns)
+
+    # 4. Create templated version of incoming request
+    templated_incoming =
+      Replacer.create_template_from_data(normalized_incoming, incoming_vars, scope: :all)
+
+    # 5. Match against cassette's templated request
+    cassette_templated = interaction["request"]
+
+    case Matcher.match?(cassette_templated, templated_incoming) do
+      :match ->
+        # 6. Substitute new variables into response template
+        templated_response = interaction["response"]
+        substituted_response = Replacer.apply_template_to_data(templated_response, incoming_vars)
+        {:ok, substituted_response}
+
+      {:error, _diff} ->
+        :no_match
+    end
+  end
+
+  # Deserialize regex patterns from JSON strings
+  # Supports both legacy format (source string only) and new format (source + opts)
+  defp deserialize_patterns(patterns) when is_map(patterns) do
+    Map.new(patterns, fn {name, value} ->
+      regex =
+        case value do
+          # New format: map with source and opts
+          %{"source" => source, "opts" => opts} ->
+            # Convert string options back to atoms (JSON serializes atoms as strings)
+            atom_opts = Enum.map(opts, &String.to_existing_atom/1)
+            Regex.compile!(source, atom_opts)
+
+          # Legacy format: just the source string
+          source when is_binary(source) ->
+            Regex.compile!(source)
+        end
+
+      {String.to_atom(name), regex}
+    end)
+  end
+
+  # Apply template transformation to an interaction
+  defp apply_template_to_interaction(interaction, template_opts) do
+    # 1. Normalize request and response for predictable extraction
+    normalized_request = Normalizer.normalize_request(interaction["request"])
+    normalized_response = Normalizer.normalize_response(interaction["response"])
+
+    # 2. Extract variables from request using patterns
+    patterns = template_opts[:patterns] || %{}
+    request_vars = Extractor.extract_from_request(normalized_request, patterns)
+
+    # 3. Create templated request
+    templated_request =
+      Replacer.create_template_from_data(normalized_request, request_vars, scope: :all)
+
+    # 4. Scan response to find which request variables appear in it
+    response_var_refs = Extractor.scan_response(normalized_response, request_vars)
+
+    # 5. Create templated response (only template vars that appear in both)
+    templated_response =
+      Replacer.create_template_from_data(normalized_response, request_vars,
+        scope: response_var_refs,
+        allow_key_templates: template_opts[:allow_key_templates] || false
+      )
+
+    # 6. Build interaction with template metadata
+    # Deduplicate recorded_values to store only unique values (maintaining order)
+    deduplicated_vars =
+      Map.new(request_vars, fn {name, values} ->
+        {name, Enum.uniq(values)}
+      end)
+
+    %{
+      "template" => %{
+        "enabled" => true,
+        "patterns" => serialize_patterns(patterns),
+        "recorded_values" => deduplicated_vars,
+        "config" => %{
+          "allow_key_templates" => template_opts[:allow_key_templates] || false
+        }
+      },
+      "request" => templated_request,
+      "response" => templated_response,
+      "recorded_at" => interaction["recorded_at"]
+    }
+  end
+
+  # Serialize regex patterns for JSON storage (preserving source and options)
+  defp serialize_patterns(patterns) when is_map(patterns) do
+    Map.new(patterns, fn {name, regex} ->
+      {to_string(name), %{"source" => Regex.source(regex), "opts" => Regex.opts(regex)}}
+    end)
+  end
+
+  # Migrate cassettes to v2.0 format
+  defp migrate_if_needed(%{"version" => "2.0"} = cassette), do: cassette
+
+  defp migrate_if_needed(%{"version" => "1.0"} = cassette) do
+    # v1.0 → v2.0: Normalize interactions in memory (sort JSON)
+    normalized_interactions =
+      Enum.map(cassette["interactions"], &normalize_v1_interaction/1)
+
+    %{cassette | "version" => @version, "interactions" => normalized_interactions}
+  end
 
   defp migrate_if_needed(%{"status" => status, "headers" => headers, "body" => body}) do
     # v0.1 format - single response
@@ -949,4 +1137,36 @@ defmodule ReqCassette.Cassette do
   end
 
   defp migrate_if_needed(cassette), do: cassette
+
+  # Normalize a v1.0 interaction to v2.0 (sort JSON bodies)
+  defp normalize_v1_interaction(interaction) do
+    interaction
+    |> normalize_interaction_request()
+    |> normalize_interaction_response()
+  end
+
+  # Normalize interaction before saving (ensure v2.0 format with sorted JSON)
+  defp normalize_interaction_for_save(interaction) do
+    interaction
+    |> normalize_interaction_request()
+    |> normalize_interaction_response()
+  end
+
+  defp normalize_interaction_request(interaction) do
+    if request = interaction["request"] do
+      normalized_request = Normalizer.normalize_request(request)
+      Map.put(interaction, "request", normalized_request)
+    else
+      interaction
+    end
+  end
+
+  defp normalize_interaction_response(interaction) do
+    if response = interaction["response"] do
+      normalized_response = Normalizer.normalize_response(response)
+      Map.put(interaction, "response", normalized_response)
+    else
+      interaction
+    end
+  end
 end
