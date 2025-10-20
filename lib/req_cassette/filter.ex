@@ -399,6 +399,52 @@ defmodule ReqCassette.Filter do
     |> apply_callback(opts[:before_record])
   end
 
+  @doc """
+  Applies only response-related filters to an interaction.
+
+  Use this when the request has already been filtered at an earlier stage
+  (e.g., in the plug before matching). This prevents non-idempotent filters
+  from being applied twice to requests.
+
+  ## Filters Applied
+
+  - Regex filters (`filter_sensitive_data`) - response body only
+  - Header filters (`filter_response_headers`) - response headers only
+  - Response callback (`filter_response`)
+  - Before record callback (`before_record`)
+
+  ## Filters NOT Applied
+
+  - Regex filters on request (already done)
+  - Header filters on request headers (already done)
+  - Request callback (`filter_request`) (already done)
+  """
+  @spec apply_response_only_filters(map(), map()) :: map()
+  def apply_response_only_filters(interaction, opts) do
+    interaction
+    |> apply_regex_filters_response_only(opts[:filter_sensitive_data] || [])
+    |> apply_response_header_filters(opts[:filter_response_headers] || [])
+    |> apply_response_callback(opts[:filter_response])
+    |> apply_callback(opts[:before_record])
+  end
+
+  # Regex filters applied to response only (request already filtered)
+  defp apply_regex_filters_response_only(interaction, patterns) do
+    Enum.reduce(patterns, interaction, fn {pattern, replacement}, acc ->
+      # Only apply to response body (request already filtered at entry point)
+      update_body_in(acc, ["response"], fn body ->
+        apply_regex_to_body(body, pattern, replacement)
+      end)
+    end)
+  end
+
+  # Header filters applied to response only
+  defp apply_response_header_filters(interaction, response_headers) do
+    update_in(interaction, ["response", "headers"], fn headers ->
+      remove_headers(headers, response_headers)
+    end)
+  end
+
   # Regex-based pattern replacement
   defp apply_regex_filters(interaction, patterns) do
     Enum.reduce(patterns, interaction, fn {pattern, replacement}, acc ->

@@ -16,6 +16,7 @@ defmodule ReqCassette do
   - 🔒 **Sensitive Data Filtering** - Built-in support for redacting secrets
   - 🎚️ **Multiple Recording Modes** - Flexible control over when to record/replay
   - 📦 **Multiple Interactions** - Store many request/response pairs in one cassette
+  - 🎭 **Templating** - Parameterized cassettes for dynamic values (IDs, timestamps, etc.)
 
   ## Quick Start
 
@@ -127,6 +128,97 @@ defmodule ReqCassette do
   requests match correctly. All other filters only run during recording.
 
   For detailed filtering documentation, see `ReqCassette.Filter`.
+
+  ## Templating (Parameterized Cassettes)
+
+  **Make one cassette handle multiple requests with different IDs, timestamps, or dynamic values.**
+
+  Templating lets you extract dynamic values from requests/responses and replay cassettes
+  with different values, perfect for testing APIs with varying identifiers.
+
+  ### Quick Example
+
+      # One cassette handles ALL product SKUs!
+      test "product lookup with any SKU" do
+        with_cassette "product_lookup",
+          [
+            template: [
+              patterns: [sku: ~r/\\d{4}-\\d{4}/]
+            ]
+          ],
+          fn plug ->
+            # First call: Records
+            response1 = Req.get!("https://api.example.com/products/1234-5678", plug: plug)
+            assert response1.body["sku"] == "1234-5678"
+
+            # Second call: Replays with DIFFERENT SKU!
+            response2 = Req.get!("https://api.example.com/products/9999-8888", plug: plug)
+            assert response2.body["sku"] == "9999-8888"  # ✅ Substituted!
+            assert response2.body["name"] == "Widget"     # ✅ Same static data
+          end
+      end
+
+  ### How It Works
+
+  1. **Extract** - Find dynamic values using regex patterns (`1234-5678`)
+  2. **Template** - Replace with markers in cassette (`{{sku.0}}`)
+  3. **Match** - Compare structure, not values during replay
+  4. **Substitute** - Insert new values (`9999-8888`) when replaying
+
+  ### Perfect For
+
+  - **E-commerce APIs** - Product SKUs, order IDs
+  - **User Management** - User IDs, email addresses
+  - **LLM APIs** - Conversation IDs, request IDs, timestamps
+  - **Pagination** - Cursor tokens, page numbers
+  - **Time-sensitive APIs** - ISO timestamps, date ranges
+
+  ### Common Patterns
+
+      template: [
+        patterns: [
+          # Product SKUs
+          sku: ~r/\\d{4}-\\d{4}/,
+
+          # UUIDs
+          uuid: ~r/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+
+          # Timestamps
+          timestamp: ~r/\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z/,
+
+          # LLM conversation IDs
+          conversation_id: ~r/conv_[a-zA-Z0-9]+/
+        ]
+      ]
+
+  ### LLM Example
+
+      test "LLM chat with varying conversation IDs" do
+        with_cassette "llm_chat",
+          [
+            filter_request_headers: ["authorization"],  # Security first!
+            template: [
+              patterns: [
+                conversation_id: ~r/conv_[a-zA-Z0-9]+/,
+                message_id: ~r/msg_[a-zA-Z0-9]+/
+              ]
+            ]
+          ],
+          fn plug ->
+            # Different conversation IDs - same cassette!
+            {:ok, response} = ReqLLM.generate_text(
+              "anthropic:claude-sonnet-4-20250514",
+              "Explain recursion",
+              conversation_id: "conv_xyz789",  # Works with any ID
+              req_http_options: [plug: plug]
+            )
+
+            assert response.choices[0].message.content =~ "function calls itself"
+          end
+      end
+
+  **📖 For comprehensive templating documentation, see the
+  [Templating Guide](https://hexdocs.pm/req_cassette/guides/templating.html).**
 
   ## Advanced: before_record Hook
 
@@ -275,6 +367,45 @@ defmodule ReqCassette do
   - `text` - Plain text (HTML, XML, CSV)
   - `blob` - Binary data (images, PDFs) stored as base64
 
+  ## Templating - Parameterized Cassettes
+
+  ReqCassette supports **templating** to create parameterized cassettes that work with
+  varying dynamic values (IDs, timestamps, SKUs, etc.) while maintaining the same
+  response structure.
+
+  ### Quick Example
+
+      # One cassette handles ALL product SKUs!
+      test "product lookup" do
+        with_cassette "product",
+          [template: [patterns: [sku: ~r/\\d{4}-\\d{4}/]]],
+          fn plug ->
+            # First call: records
+            r1 = Req.get!("https://api.example.com/products/1234-5678", plug: plug)
+            assert r1.body["sku"] == "1234-5678"
+
+            # Second call: replays with DIFFERENT SKU!
+            r2 = Req.get!("https://api.example.com/products/9999-8888", plug: plug)
+            assert r2.body["sku"] == "9999-8888"  # ✅ Substituted!
+          end
+      end
+
+  ### How It Works
+
+  1. **Extract** - Find dynamic values using regex patterns (`1234-5678`)
+  2. **Template** - Replace with markers in cassette (`{{sku.0}}`)
+  3. **Match** - Compare structure (not values) during replay
+  4. **Substitute** - Insert new values into response (`9999-8888`)
+
+  ### Perfect For
+
+  - E-commerce APIs (SKUs, order IDs)
+  - LLM APIs (conversation IDs, request IDs)
+  - Time-sensitive APIs (timestamps)
+  - Pagination (cursor tokens)
+
+  **📖 For comprehensive templating documentation, see the [Templating Guide](templating.html).**
+
   ## Documentation
 
   See `with_cassette/3` for the full API and configuration options.
@@ -312,7 +443,12 @@ defmodule ReqCassette do
   - `:filter_sensitive_data` - List of `{pattern, replacement}` tuples for regex-based redaction
   - `:filter_request_headers` - List of header names to remove from requests
   - `:filter_response_headers` - List of header names to remove from responses
+  - `:filter_request` - Callback to filter request data
+  - `:filter_response` - Callback to filter response data
   - `:before_record` - Callback function to modify interaction before saving
+  - `:template` - Template configuration for parameterized cassettes (keyword list):
+    - `:patterns` - Keyword list of `{name, regex}` pairs (e.g., `[sku: ~r/\\d{4}-\\d{4}/]`)
+    - `:allow_key_templates` - Allow JSON key templating (default: false)
 
   ## Returns
 
@@ -379,6 +515,14 @@ defmodule ReqCassette do
 
   # 3-arity: with_cassette(name, opts, fun)
   def with_cassette(name, opts, fun) when is_function(fun, 1) do
+    # Validate and process template options if present
+    template_opts =
+      if opts[:template] do
+        validate_and_process_template_opts(opts[:template])
+      else
+        nil
+      end
+
     plug_opts = %{
       cassette_name: name,
       cassette_dir: opts[:cassette_dir] || "test/cassettes",
@@ -389,7 +533,8 @@ defmodule ReqCassette do
       filter_response_headers: opts[:filter_response_headers] || [],
       filter_request: opts[:filter_request],
       filter_response: opts[:filter_response],
-      before_record: opts[:before_record]
+      before_record: opts[:before_record],
+      template: template_opts
     }
 
     plug = {ReqCassette.Plug, plug_opts}
@@ -399,5 +544,62 @@ defmodule ReqCassette do
   def with_cassette(name, fun, []) when is_function(fun, 1) do
     # Handle case where opts is omitted: with_cassette("name", fn plug -> ... end)
     with_cassette(name, [], fun)
+  end
+
+  # Private helpers
+
+  defp validate_and_process_template_opts(template_opts) when is_list(template_opts) do
+    # Validate patterns
+    patterns = template_opts[:patterns]
+
+    unless patterns && is_list(patterns) && Keyword.keyword?(patterns) do
+      raise ArgumentError, """
+      Template :patterns must be a keyword list of {name, regex} pairs.
+
+      Example:
+        template: [
+          patterns: [
+            sku: ~r/\\d{4}-\\d{4}/,
+            order_id: ~r/ORD-\\d+/
+          ]
+        ]
+      """
+    end
+
+    # Validate each pattern is a regex
+    Enum.each(patterns, fn {name, pattern} ->
+      unless is_atom(name) do
+        raise ArgumentError,
+              "Template pattern name must be an atom, got: #{inspect(name)}"
+      end
+
+      unless is_struct(pattern, Regex) do
+        raise ArgumentError,
+              "Template pattern #{inspect(name)} must be a Regex, got: #{inspect(pattern)}"
+      end
+    end)
+
+    # Convert patterns to map for easier lookup
+    patterns_map = Map.new(patterns)
+
+    # Build processed template opts
+    %{
+      patterns: patterns_map,
+      allow_key_templates: template_opts[:allow_key_templates] || false
+    }
+  end
+
+  defp validate_and_process_template_opts(invalid) do
+    raise ArgumentError, """
+    Template options must be a keyword list.
+
+    Got: #{inspect(invalid)}
+
+    Example:
+      template: [
+        patterns: [sku: ~r/\\d{4}-\\d{4}/],
+        allow_key_templates: false
+      ]
+    """
   end
 end

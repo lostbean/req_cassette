@@ -30,6 +30,7 @@ like Anthropic's Claude!
 - 🎚️ **Multiple Recording Modes** - Flexible control over when to record/replay
 - 📦 **Multiple Interactions** - Store many request/response pairs in one
   cassette
+- 🎭 **Templating** - Parameterized cassettes for dynamic values (IDs, timestamps, etc.)
 
 ## Quick Start
 
@@ -195,6 +196,102 @@ with_cassette "auth",
 [Sensitive Data Filtering Guide](docs/SENSITIVE_DATA_FILTERING.md)** for
 comprehensive documentation on protecting secrets, common patterns, and best
 practices.
+
+### Templating
+
+**Parameterized cassettes** for testing APIs with dynamic values. One cassette can handle multiple requests with different IDs, timestamps, or other varying data.
+
+#### Quick Example
+
+```elixir
+# One cassette handles ALL product SKUs!
+test "product lookup with any SKU" do
+  with_cassette "product_lookup",
+    [
+      template: [
+        patterns: [sku: ~r/\d{4}-\d{4}/]
+      ]
+    ],
+    fn plug ->
+      # First call: Records
+      response1 = Req.get!("https://api.example.com/products/1234-5678", plug: plug)
+      assert response1.body["sku"] == "1234-5678"
+
+      # Second call: Replays with DIFFERENT SKU!
+      response2 = Req.get!("https://api.example.com/products/9999-8888", plug: plug)
+      assert response2.body["sku"] == "9999-8888"  # ✅ Substituted!
+      assert response2.body["name"] == "Widget"     # ✅ Same static data
+    end
+end
+```
+
+#### How It Works
+
+1. **Extract** dynamic values using regex patterns (`1234-5678`)
+2. **Template** request/response with markers (`{{sku.0}}`)
+3. **Match** on structure, not values
+4. **Substitute** new values during replay
+
+#### Perfect For
+
+- **E-commerce APIs** - Product SKUs, order IDs
+- **User management** - User IDs, email addresses
+- **LLM APIs** - Conversation IDs, timestamps, request IDs
+- **Pagination** - Cursor tokens, page numbers
+- **Time-sensitive APIs** - ISO timestamps, date ranges
+
+#### Common Patterns
+
+```elixir
+template: [
+  patterns: [
+    # Product SKUs
+    sku: ~r/\d{4}-\d{4}/,
+
+    # Order IDs
+    order_id: ~r/ORD-\d+/,
+
+    # UUIDs
+    uuid: ~r/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+
+    # Timestamps
+    timestamp: ~r/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/,
+
+    # Conversation IDs (LLM APIs)
+    conversation_id: ~r/conv_[a-zA-Z0-9]+/
+  ]
+]
+```
+
+#### LLM Example
+
+```elixir
+test "LLM chat with varying conversation IDs" do
+  with_cassette "llm_chat",
+    [
+      filter_request_headers: ["authorization"],  # Security first!
+      template: [
+        patterns: [
+          conversation_id: ~r/conv_[a-zA-Z0-9]+/,
+          message_id: ~r/msg_[a-zA-Z0-9]+/
+        ]
+      ]
+    ],
+    fn plug ->
+      # Different conversation IDs - same cassette!
+      {:ok, response} = ReqLLM.generate_text(
+        "anthropic:claude-sonnet-4-20250514",
+        "Explain recursion",
+        conversation_id: "conv_xyz789",  # Works with any ID
+        req_http_options: [plug: plug]
+      )
+
+      assert response.choices[0].message.content =~ "function calls itself"
+    end
+end
+```
+
+**📖 See the [Templating Guide](docs/guides/templating.md)** for comprehensive documentation, advanced patterns, debugging tips, and best practices.
 
 ### Custom Request Matching
 
@@ -377,12 +474,17 @@ ANTHROPIC_API_KEY=sk-... mix run examples/req_llm_demo.exs
 
 ## Documentation
 
-- **[Migration Guide](docs/MIGRATION_V0.1_TO_V0.2.md)** - Upgrading from v0.1 to
-  v0.2
+### Guides
+
+- **[Templating Guide](docs/guides/templating.md)** - Parameterized cassettes for dynamic values
+- **[Sensitive Data Filtering Guide](docs/SENSITIVE_DATA_FILTERING.md)** - Protect API keys and secrets
+- **[ReqLLM Integration Guide](docs/REQ_LLM_INTEGRATION.md)** - Testing LLM applications
+- **[Migration Guide](docs/MIGRATION_V0.1_TO_V0.2.md)** - Upgrading from v0.1 to v0.2
+
+### Reference
+
 - [ROADMAP.md](ROADMAP.md) - Development roadmap and v0.2 features
 - [DESIGN_SPEC.md](docs/DESIGN_SPEC.md) - Complete design specification
-- [REQ_LLM_INTEGRATION.md](docs/REQ_LLM_INTEGRATION.md) - ReqLLM integration
-  guide
 - [DEVELOPMENT.md](docs/DEVELOPMENT.md) - Development guide
 
 ## Example Test
