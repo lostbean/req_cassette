@@ -202,7 +202,7 @@ Dev/Test dependencies:
 
 - `README.md` - Project overview and quick start
 - `SUMMARY.md` - Complete project documentation
-- `REQ_LLM_INTEGRATION.md` - ReqLLM usage guide
+- `docs/guides/` - User guides (templating, ReqLLM, filtering)
 - `DEVELOPMENT.md` - This file
 
 ## Contributing

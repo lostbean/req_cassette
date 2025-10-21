@@ -37,8 +37,10 @@ req_cassette/
 ├── livebooks/
 │   └── req_llm.livemd           # Interactive demo
 └── docs/
-    ├── REQ_LLM_INTEGRATION.md   # ReqLLM usage guide
-    ├── SENSITIVE_DATA_FILTERING.md  # Comprehensive filtering guide
+    ├── guides/
+    │   ├── req-llm-integration.md   # ReqLLM usage guide
+    │   ├── filtering.md             # Filtering sensitive data guide
+    │   └── templating.md            # Templating guide
     └── SUMMARY.md               # This file
 ```
 

@@ -107,6 +107,122 @@ defmodule MyApp.LLMTest do
 end
 ```
 
+## Using Templates with ReqLLM
+
+Templates are perfect for LLM APIs because they handle dynamic values like conversation IDs, message IDs, and timestamps. Instead of creating separate cassettes for each unique ID, **one cassette handles them all**.
+
+### Why Use Templates with LLMs?
+
+LLM APIs often include dynamic identifiers that change with every request:
+
+- **Conversation IDs** - `conv_abc123`, `conv_xyz789`, etc.
+- **Message IDs** - `msg_id_001`, `msg_id_002`, etc.
+- **Request IDs** - `req_12345`, `req_67890`, etc.
+- **Timestamps** - `2025-01-15T10:30:00Z`
+
+Without templates, you'd need a separate cassette for each unique combination. With templates, **one cassette handles all variations**.
+
+### Simple Example
+
+```elixir
+test "LLM chat with template for conversation IDs" do
+  with_cassette "llm_chat",
+    [
+      template: [
+        patterns: [
+          conversation_id: ~r/conv_[a-zA-Z0-9]+/,
+          message_id: ~r/msg_[a-zA-Z0-9]+/
+        ]
+      ]
+    ],
+    fn plug ->
+      # First call - records with conv_abc123
+      {:ok, response1} = ReqLLM.generate_text(
+        "anthropic:claude-sonnet-4-20250514",
+        "Explain recursion",
+        conversation_id: "conv_abc123",
+        req_http_options: [plug: plug]
+      )
+
+      assert response1.choices[0].message.content =~ "function calls itself"
+
+      # Second call - replays with DIFFERENT ID using template!
+      {:ok, response2} = ReqLLM.generate_text(
+        "anthropic:claude-sonnet-4-20250514",
+        "Explain recursion",
+        conversation_id: "conv_xyz789",  # Different ID!
+        req_http_options: [plug: plug]
+      )
+
+      # Same response, different ID substituted
+      assert response2.choices[0].message.content =~ "function calls itself"
+    end
+end
+```
+
+**What happens:**
+
+1. **Recording:** The first call records the real API response
+2. **Templating:** `conv_abc123` is replaced with `{{conversation_id.0}}`
+3. **Replay:** The second call matches the template structure and substitutes `conv_xyz789`
+
+### Combining Filters and Templates
+
+The real power comes from combining filtering (security) with templates (flexibility):
+
+```elixir
+@cassette_opts [
+  # Security: Filter API keys
+  filter_request_headers: ["authorization", "x-api-key"],
+
+  # Flexibility: Template dynamic IDs
+  template: [
+    patterns: [
+      conversation_id: ~r/conv_[a-zA-Z0-9]+/,
+      request_id: ~r/req_[a-zA-Z0-9]+/,
+      timestamp: ~r/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/
+    ]
+  ]
+]
+
+test "secure and flexible LLM testing" do
+  with_cassette "llm_secure_flexible", @cassette_opts, fn plug ->
+    {:ok, response} = ReqLLM.generate_text(
+      "anthropic:claude-sonnet-4-20250514",
+      "Write a haiku",
+      conversation_id: "conv_test_123",  # Will be templated
+      req_http_options: [
+        plug: plug,
+        headers: [{"x-api-key", "sk-secret"}]  # Will be filtered
+      ]
+    )
+
+    assert String.contains?(response.choices[0].message.content, "\n")
+  end
+end
+```
+
+**Benefits:**
+
+- 🔒 **API keys filtered** - Never saved to cassettes
+- 🎯 **IDs templated** - One cassette for all conversation IDs
+- 💰 **Save money** - Replay instead of calling API repeatedly
+- ⚡ **Fast tests** - No network calls during replay
+
+### When to Use Templates
+
+**Use templates when:**
+- You have dynamic IDs (conversation, message, request, etc.)
+- Timestamps change between test runs
+- You want one cassette for multiple similar requests
+
+**Don't use templates when:**
+- Testing specific error scenarios with exact values
+- API responses depend on the actual ID value
+- You want exact value matching for debugging
+
+**📖 For complete templating documentation**, patterns, and advanced use cases, see the [Templating Guide](templating.md).
+
 ## 🔒 Protecting API Keys
 
 **Critical:** LLM APIs use Authorization headers containing sensitive API keys.
@@ -165,7 +281,7 @@ end
 
 **📖 For complete documentation** on protecting sensitive data, common patterns,
 and best practices, see the
-[Sensitive Data Filtering Guide](SENSITIVE_DATA_FILTERING.md).
+[Filtering Sensitive Data Guide](filtering.md).
 
 ## Recording Multiple API Calls (Agents)
 

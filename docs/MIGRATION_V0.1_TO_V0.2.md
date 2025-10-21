@@ -495,7 +495,7 @@ with_cassette "auth",
   end
 ```
 
-**📖 See the [Sensitive Data Filtering Guide](SENSITIVE_DATA_FILTERING.md)** for
+**📖 See the [Filtering Sensitive Data Guide](guides/filtering.md)** for
 comprehensive documentation on protecting secrets, common patterns, and best
 practices.
 

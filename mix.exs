@@ -78,16 +78,15 @@ defmodule ReqCassette.MixProject do
       main: "ReqCassette",
       extras: [
         "docs/guides/templating.md": [title: "Templating Guide"],
+        "docs/guides/req-llm-integration.md": [title: "ReqLLM Integration"],
+        "docs/guides/filtering.md": [title: "Filtering Sensitive Data"],
         "docs/MIGRATION_V0.2_TO_V0.3.md": [title: "Migration Guide (v0.2 → v0.3)"],
-        "docs/MIGRATION_V0.1_TO_V0.2.md": [title: "Migration Guide (v0.1 → v0.2)"],
-        "docs/REQ_LLM_INTEGRATION.md": [title: "ReqLLM Integration Guide"],
-        "docs/SENSITIVE_DATA_FILTERING.md": [title: "Sensitive Data Filtering Guide"]
+        "docs/MIGRATION_V0.1_TO_V0.2.md": [title: "Migration Guide (v0.1 → v0.2)"]
       ],
       source_ref: "v0.3.0",
       formatters: ["html"],
       groups_for_extras: [
         Guides: ~r/docs\/guides/,
-        "Integration Guides": ~r/docs\/(REQ_LLM|SENSITIVE)/,
         "Migration Guides": ~r/docs\/MIGRATION/
       ],
       groups_for_modules: [
