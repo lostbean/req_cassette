@@ -693,6 +693,6 @@ with_cassette "secure_test",
 
 For more examples, see:
 
-- [ReqLLM Integration Guide](REQ_LLM_INTEGRATION.md)
+- [ReqLLM Integration Guide](req-llm-integration.md)
 - [Filter module documentation](../lib/req_cassette/filter.ex)
 - [Example tests](../test/req_cassette/filter_test.exs)
