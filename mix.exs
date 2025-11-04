@@ -9,10 +9,6 @@ defmodule ReqCassette.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      preferred_cli_env: [
-        precommit: :test,
-        ci: :test
-      ],
 
       # Hex
       description: "VCR-style record-and-replay library for Req HTTP client",
@@ -44,6 +40,10 @@ defmodule ReqCassette.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
+  end
+
+  def cli do
+    [preferred_envs: [precommit: :test, ci: :test]]
   end
 
   # Aliases for common tasks
