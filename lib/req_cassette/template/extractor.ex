@@ -247,7 +247,9 @@ defmodule ReqCassette.Template.Extractor do
     |> Map.new()
   end
 
-  # Resolves overlapping matches by keeping the longest match at each position
+  # Resolves overlapping matches by keeping the longest match at each position.
+  # When multiple patterns match the same text with the same length,
+  # the winner is deterministic: alphabetically first pattern name wins.
   defp resolve_overlaps(matches) do
     matches
     |> Enum.sort_by(& &1.start)
@@ -271,10 +273,13 @@ defmodule ReqCassette.Template.Extractor do
             )
           end)
 
-        # Keep the longest among all overlapping matches
+        # Keep the longest among all overlapping matches.
+        # For deterministic behavior when lengths are equal,
+        # use alphabetically first pattern name as tie-breaker.
         longest =
           [match | overlapping]
-          |> Enum.max_by(& &1.length)
+          |> Enum.sort_by(fn m -> {-m.length, to_string(m.name)} end)
+          |> hd()
 
         [longest | non_overlapping]
       else
@@ -294,8 +299,10 @@ defmodule ReqCassette.Template.Extractor do
     cond do
       Map.has_key?(data, "body_json") ->
         # Extract from JSON body by serializing first
-        json_text = Jason.encode!(data["body_json"])
-        extract_from_string(json_text, patterns)
+        case Jason.encode(data["body_json"]) do
+          {:ok, json_text} -> extract_from_string(json_text, patterns)
+          {:error, _} -> %{}
+        end
 
       Map.has_key?(data, "body") ->
         # Extract from text body
@@ -303,8 +310,10 @@ defmodule ReqCassette.Template.Extractor do
 
       Map.has_key?(data, "body_blob") ->
         # Extract from binary body (decode base64 first)
-        blob_text = Base.decode64!(data["body_blob"])
-        extract_from_string(blob_text, patterns)
+        case Base.decode64(data["body_blob"]) do
+          {:ok, blob_text} -> extract_from_string(blob_text, patterns)
+          :error -> %{}
+        end
 
       true ->
         %{}
@@ -314,13 +323,19 @@ defmodule ReqCassette.Template.Extractor do
   defp extract_response_text(response) do
     cond do
       Map.has_key?(response, "body_json") ->
-        Jason.encode!(response["body_json"])
+        case Jason.encode(response["body_json"]) do
+          {:ok, json_text} -> json_text
+          {:error, _} -> ""
+        end
 
       Map.has_key?(response, "body") ->
         response["body"] || ""
 
       Map.has_key?(response, "body_blob") ->
-        Base.decode64!(response["body_blob"])
+        case Base.decode64(response["body_blob"]) do
+          {:ok, blob_text} -> blob_text
+          :error -> ""
+        end
 
       true ->
         ""

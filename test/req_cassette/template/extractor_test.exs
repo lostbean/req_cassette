@@ -89,6 +89,28 @@ defmodule ReqCassette.Template.ExtractorTest do
       refute Map.has_key?(result, :number)
     end
 
+    test "handles overlapping matches with same length - deterministic winner by pattern name" do
+      # Two patterns that match the same text with the same length
+      # The winner should be deterministic (alphabetically first pattern name)
+      patterns = %{
+        order_id: ~r/ORD-\w{4}/,
+        code: ~r/ORD-\w{4}/
+      }
+
+      string = "Reference: ORD-1234"
+
+      # Run multiple times to verify determinism
+      results = for _ <- 1..10, do: Extractor.extract_from_string(string, patterns)
+
+      # All results should be identical
+      assert Enum.uniq(results) |> length() == 1
+
+      # The winner should be :code (alphabetically first)
+      result = hd(results)
+      assert result == %{code: ["ORD-1234"]}
+      refute Map.has_key?(result, :order_id)
+    end
+
     test "preserves extraction order" do
       patterns = %{letter: ~r/[A-Z]/}
       string = "C B A"
@@ -295,6 +317,23 @@ defmodule ReqCassette.Template.ExtractorTest do
       result = Extractor.extract_from_request(request, patterns)
 
       # Blob bodies are not extracted
+      assert result == %{}
+    end
+
+    test "handles invalid base64 in body_blob gracefully" do
+      # Invalid base64 data
+      request = %{
+        "method" => "POST",
+        "uri" => "http://example.com/upload",
+        "body_type" => "blob",
+        "body_blob" => "!!!not-valid-base64!!!"
+      }
+
+      patterns = %{sku: ~r/\d{4}-\d{4}/}
+
+      # Should not crash, should return empty result
+      result = Extractor.extract_from_request(request, patterns)
+
       assert result == %{}
     end
 

@@ -16,6 +16,8 @@ with parameterized data.
 - [Common Use Cases](#common-use-cases)
 - [Template Variables](#template-variables)
 - [Configuration Options](#configuration-options)
+  - [Combining with match_requests_on](#combining-with-match_requests_on)
+  - [Debug Mode](#debug-mode)
 - [Debugging Failed Matches](#debugging-failed-matches)
 - [JSON vs Text Templating](#json-vs-text-templating)
 - [LLM API Integration](#llm-api-integration)
@@ -406,15 +408,16 @@ end
 
 ReqCassette determines what to template based on where values appear:
 
-| Value Location              | Behavior                               | Example                |
-| --------------------------- | -------------------------------------- | ---------------------- |
-| **Request only**            | Templated in request (wildcard match)  | Search filters         |
-| **Response only**           | Not templated (static)                 | System-generated IDs   |
-| **Both request & response** | **Templated in both!**                 | Echo APIs, SKU lookups |
+| Value Location              | Behavior                              | Example                |
+| --------------------------- | ------------------------------------- | ---------------------- |
+| **Request only**            | Templated in request (wildcard match) | Search filters         |
+| **Response only**           | Not templated (static)                | System-generated IDs   |
+| **Both request & response** | **Templated in both!**                | Echo APIs, SKU lookups |
 
 #### Request-Only Values
 
-Values that appear only in the request are **templated in the request** but remain constant in the response:
+Values that appear only in the request are **templated in the request** but
+remain constant in the response:
 
 ```elixir
 # Request: "Search for SKU 1234-5678"
@@ -439,7 +442,8 @@ Values that appear only in the response are **static API data**:
 
 #### Shared Values (Templated in Both!)
 
-Values appearing in **both** request and response are templated in **both places**:
+Values appearing in **both** request and response are templated in **both
+places**:
 
 ```elixir
 # Request: "Get SKU 1234-5678"
@@ -546,6 +550,87 @@ template: [
 
 - Standard REST APIs (rarely needed)
 - If unsure (stick with default)
+
+### Combining with match_requests_on
+
+Templates work seamlessly with `match_requests_on` to control which parts of the
+request are compared during replay. This is powerful for handling requests that
+have both dynamic values AND varying components you want to ignore.
+
+```elixir
+# Match only method and URI - ignore query string and body differences
+with_cassette "flexible_api",
+  [
+    match_requests_on: [:method, :uri],
+    template: [
+      patterns: [item_id: ~r/item-\d{4}/]
+    ]
+  ],
+  fn plug ->
+    # Records: GET /items/item-1234?timestamp=12345
+    Req.get!("https://api.example.com/items/item-1234?timestamp=12345", plug: plug)
+
+    # Replays successfully - different query string ignored, item_id templated!
+    Req.get!("https://api.example.com/items/item-9999?timestamp=67890", plug: plug)
+  end
+```
+
+**How it works:**
+
+1. **Filtering runs first** - sensitive data removed
+2. **Template patterns applied** - dynamic values extracted
+3. **match_requests_on determines comparison** - only specified fields compared
+
+**Common combinations:**
+
+```elixir
+# Ignore query params (timestamps, cache busters)
+match_requests_on: [:method, :uri],
+template: [patterns: [id: ~r/id-\d+/]]
+
+# Ignore body but match URI exactly
+match_requests_on: [:method, :uri, :query],
+template: [patterns: [session: ~r/sess_\w+/]]
+
+# Full matching with templates (default behavior)
+match_requests_on: [:method, :uri, :query, :body],
+template: [patterns: [sku: ~r/\d{4}-\d{4}/]]
+```
+
+**Note:** Headers are never compared in template matching, regardless of
+`match_requests_on`. Use `filter_request_headers` to remove varying headers.
+
+### Debug Mode
+
+Enable debug logging to see what's happening during template matching:
+
+```elixir
+template: [
+  patterns: [sku: ~r/\d{4}-\d{4}/],
+  debug: true  # Logs extraction and matching details
+]
+```
+
+Debug mode outputs:
+
+- **Extraction phase**: Which values were extracted by which patterns
+- **Matching phase**: Template structures being compared
+- **Mismatch details**: Exactly where structures differ
+
+**Example debug output:**
+
+```
+[ReqCassette Template] Pattern Extraction
+  Patterns: [sku: ~r/\d{4}-\d{4}/]
+  Request vars: %{sku: ["1234-5678"]}
+
+[ReqCassette Template] Match Attempt
+  Cassette request (templated): "Get SKU {{sku.0}}"
+  Incoming request (templated): "Get SKU {{sku.0}}"
+  Result: :match
+```
+
+This is invaluable when debugging why a template isn't matching as expected.
 
 ---
 

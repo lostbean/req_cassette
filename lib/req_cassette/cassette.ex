@@ -594,13 +594,34 @@ defmodule ReqCassette.Cassette do
       with {:ok, data} <- File.read(path),
            {:ok, parsed} <- Jason.decode(data) do
         cassette = migrate_if_needed(parsed)
-        {:ok, cassette}
+        # Pre-compile regex patterns for templated interactions
+        cassette_with_compiled = compile_template_patterns(cassette)
+        {:ok, cassette_with_compiled}
       else
         _ -> :not_found
       end
     else
       :not_found
     end
+  end
+
+  # Pre-compile regex patterns for all templated interactions in the cassette.
+  # This avoids recompiling patterns on every match attempt.
+  defp compile_template_patterns(cassette) do
+    interactions = Map.get(cassette, "interactions", [])
+
+    compiled_interactions =
+      Enum.map(interactions, fn interaction ->
+        if interaction["template"] && interaction["template"]["enabled"] do
+          patterns_map = interaction["template"]["patterns"] || %{}
+          compiled = deserialize_patterns(patterns_map)
+          put_in(interaction, ["template", "compiled_patterns"], compiled)
+        else
+          interaction
+        end
+      end)
+
+    Map.put(cassette, "interactions", compiled_interactions)
   end
 
   # Private helpers
@@ -996,8 +1017,13 @@ defmodule ReqCassette.Cassette do
     # 1. Normalize incoming request (already filtered)
     normalized_incoming = Normalizer.normalize_request(filtered_request)
 
-    # 2. Deserialize patterns from cassette
-    patterns = deserialize_patterns(interaction["template"]["patterns"] || %{})
+    # 2. Use pre-compiled patterns if available, otherwise deserialize
+    # (compiled_patterns is set during cassette load for performance)
+    patterns =
+      case get_in(interaction, ["template", "compiled_patterns"]) do
+        nil -> deserialize_patterns(interaction["template"]["patterns"] || %{})
+        compiled -> compiled
+      end
 
     # 3. Extract variables from incoming request
     incoming_vars = Extractor.extract_from_request(normalized_incoming, patterns)
@@ -1165,10 +1191,25 @@ defmodule ReqCassette.Cassette do
   end
 
   # Normalize interaction before saving (ensure v2.0 format with sorted JSON)
+  # Also removes runtime-only fields like compiled_patterns
   defp normalize_interaction_for_save(interaction) do
     interaction
     |> normalize_interaction_request()
     |> normalize_interaction_response()
+    |> remove_runtime_fields()
+  end
+
+  # Remove fields that are only used at runtime and shouldn't be persisted
+  defp remove_runtime_fields(interaction) do
+    case get_in(interaction, ["template", "compiled_patterns"]) do
+      nil ->
+        interaction
+
+      _ ->
+        update_in(interaction, ["template"], fn template ->
+          Map.delete(template, "compiled_patterns")
+        end)
+    end
   end
 
   defp normalize_interaction_request(interaction) do
