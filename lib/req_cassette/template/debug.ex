@@ -1,9 +1,20 @@
 defmodule ReqCassette.Template.Debug do
   @moduledoc """
-  Formats debugging information for template matching failures.
+  Formats debugging information for template matching failures and provides
+  optional logging during template extraction and matching.
 
   When a template match fails during replay, this module provides detailed diff output
   to help developers understand what went wrong and how to fix it.
+
+  ## Debug Logging
+
+  Enable debug logging by setting `debug: true` in template options:
+
+      template: [preset: :anthropic, debug: true]
+
+  This will log:
+  - Pattern extraction results during recording
+  - Template match attempts during replay
 
   ## Example Output
 
@@ -29,6 +40,8 @@ defmodule ReqCassette.Template.Debug do
   Hint: The request structure changed. Update cassette or adjust patterns.
   ```
   """
+
+  require Logger
 
   @doc """
   Formats a detailed diff for a template match failure.
@@ -83,9 +96,136 @@ defmodule ReqCassette.Template.Debug do
     """
   end
 
-  # Private helpers
+  @doc """
+  Logs pattern extraction results during recording.
 
-  defp format_request(request) do
+  When `enabled` is true, logs the patterns used and variables extracted.
+  When `enabled` is false, this is a no-op.
+
+  ## Parameters
+
+  - `variables` - Map of extracted variables (e.g., `%{sku: ["1234-5678"]}`)
+  - `patterns` - Map of pattern names to regexes
+  - `enabled` - Whether debug logging is enabled
+
+  ## Examples
+
+      iex> log_extraction(%{sku: ["1234"]}, %{sku: ~r/\\d{4}/}, true)
+      :ok
+  """
+  @spec log_extraction(map(), map(), boolean()) :: :ok
+  def log_extraction(_variables, _patterns, false), do: :ok
+
+  def log_extraction(variables, patterns, true) do
+    Logger.debug(fn ->
+      """
+      [ReqCassette Template] Pattern Extraction
+      ==========================================
+      Patterns: #{inspect(Map.keys(patterns))}
+
+      #{format_variables(variables)}
+      """
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Logs a template match attempt during replay.
+
+  When `enabled` is true, logs whether the match succeeded or failed,
+  with detailed diff information on failure.
+  When `enabled` is false, this is a no-op.
+
+  ## Parameters
+
+  - `cassette_request` - The templated request from the cassette
+  - `incoming_request` - The templated incoming request
+  - `result` - Either `:match` or `{:error, diff}`
+  - `variables` - The extracted variables from the incoming request
+  - `enabled` - Whether debug logging is enabled
+
+  ## Examples
+
+      iex> log_match_attempt(%{...}, %{...}, :match, %{sku: ["1234"]}, true)
+      :ok
+  """
+  @spec log_match_attempt(map(), map(), :match | {:error, map()}, map(), boolean()) :: :ok
+  def log_match_attempt(_cassette_req, _incoming_req, _result, _variables, false), do: :ok
+
+  def log_match_attempt(_cassette_req, _incoming_req, :match, variables, true) do
+    Logger.debug(fn ->
+      """
+      [ReqCassette Template] Match SUCCESS
+      =====================================
+      #{format_variables(variables)}
+      """
+    end)
+
+    :ok
+  end
+
+  def log_match_attempt(cassette_req, incoming_req, {:error, diff}, variables, true) do
+    Logger.debug(fn ->
+      "[ReqCassette Template] Match FAILED\n" <>
+        format_diff(cassette_req, incoming_req, diff, variables)
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Formats extracted variables for display.
+
+  This is a public helper that can be reused by other modules
+  (e.g., Mix tasks for cassette inspection).
+
+  ## Parameters
+
+  - `variables` - Map of variable names to lists of values
+
+  ## Returns
+
+  A formatted string showing each variable and its values.
+
+  ## Examples
+
+      iex> format_variables(%{sku: ["1234", "5678"], order_id: ["ORD-1"]})
+      "  sku.0 = \\"1234\\"\\n  sku.1 = \\"5678\\"\\n  order_id.0 = \\"ORD-1\\""
+  """
+  @spec format_variables(map()) :: String.t()
+  def format_variables(variables) do
+    if map_size(variables) == 0 do
+      "  (none)"
+    else
+      variables
+      |> Enum.flat_map(fn {name, values} ->
+        values
+        |> Enum.with_index()
+        |> Enum.map(fn {val, idx} ->
+          "  #{name}.#{idx} = #{inspect(val)}"
+        end)
+      end)
+      |> Enum.join("\n")
+    end
+  end
+
+  @doc """
+  Formats a request summary for display.
+
+  This is a public helper that can be reused by other modules
+  (e.g., Mix tasks for cassette inspection).
+
+  ## Parameters
+
+  - `request` - A request map with method, uri, query_string, and body fields
+
+  ## Returns
+
+  A formatted string summarizing the request.
+  """
+  @spec format_request(map()) :: String.t()
+  def format_request(request) do
     [
       "  Method: #{request["method"] || "?"}",
       "  URI: #{request["uri"] || "?"}",
@@ -95,6 +235,8 @@ defmodule ReqCassette.Template.Debug do
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
+
+  # Private helpers
 
   defp format_query(%{"query_string" => query}) when query != nil and query != "" do
     "  Query: #{query}"
@@ -160,22 +302,6 @@ defmodule ReqCassette.Template.Debug do
 
   defp format_difference(diff) do
     inspect(diff, pretty: true)
-  end
-
-  defp format_variables(variables) do
-    if map_size(variables) == 0 do
-      "  (none)"
-    else
-      variables
-      |> Enum.flat_map(fn {name, values} ->
-        values
-        |> Enum.with_index()
-        |> Enum.map(fn {val, idx} ->
-          "  #{name}.#{idx} = #{inspect(val)}"
-        end)
-      end)
-      |> Enum.join("\n")
-    end
   end
 
   defp suggest_fix(%{field: "method"}) do

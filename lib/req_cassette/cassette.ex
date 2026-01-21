@@ -139,10 +139,11 @@ defmodule ReqCassette.Cassette do
 
   alias ReqCassette.BodyType
   alias ReqCassette.Filter
-  alias ReqCassette.Template.Normalizer
+  alias ReqCassette.Template.Debug
   alias ReqCassette.Template.Extractor
-  alias ReqCassette.Template.Replacer
   alias ReqCassette.Template.Matcher
+  alias ReqCassette.Template.Normalizer
+  alias ReqCassette.Template.Replacer
 
   @version "2.0"
 
@@ -1007,8 +1008,20 @@ defmodule ReqCassette.Cassette do
 
     # 5. Match against cassette's templated request
     cassette_templated = interaction["request"]
+    debug_enabled = get_in(interaction, ["template", "config", "debug"]) || false
 
-    case Matcher.match?(cassette_templated, templated_incoming) do
+    result = Matcher.match?(cassette_templated, templated_incoming)
+
+    # Log the match attempt if debug is enabled
+    Debug.log_match_attempt(
+      cassette_templated,
+      templated_incoming,
+      result,
+      incoming_vars,
+      debug_enabled
+    )
+
+    case result do
       :match ->
         # 6. Substitute new variables into response template
         templated_response = interaction["response"]
@@ -1049,7 +1062,11 @@ defmodule ReqCassette.Cassette do
 
     # 2. Extract variables from request using patterns
     patterns = template_opts[:patterns] || %{}
+    debug_enabled = template_opts[:debug] || false
     request_vars = Extractor.extract_from_request(normalized_request, patterns)
+
+    # Log extraction if debug is enabled
+    Debug.log_extraction(request_vars, patterns, debug_enabled)
 
     # 3. Create templated request
     templated_request =
@@ -1078,7 +1095,8 @@ defmodule ReqCassette.Cassette do
         "patterns" => serialize_patterns(patterns),
         "recorded_values" => deduplicated_vars,
         "config" => %{
-          "allow_key_templates" => template_opts[:allow_key_templates] || false
+          "allow_key_templates" => template_opts[:allow_key_templates] || false,
+          "debug" => debug_enabled
         }
       },
       "request" => templated_request,
