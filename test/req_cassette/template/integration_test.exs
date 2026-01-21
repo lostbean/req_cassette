@@ -257,4 +257,59 @@ defmodule ReqCassette.Template.IntegrationTest do
       assert interaction["response"]["body_json"]["count"] == 5
     end
   end
+
+  describe "before_record hook integration with templates" do
+    @tag capture_log: true
+    test "preserves custom keys added by before_record callback" do
+      bypass = Bypass.open()
+
+      Bypass.expect_once(bypass, "POST", "/api", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{"sku" => "1234-5678"}))
+      end)
+
+      with_cassette(
+        "before_record_with_template",
+        [
+          cassette_dir: @cassette_dir,
+          template: [
+            patterns: [sku: ~r/\d{4}-\d{4}/]
+          ],
+          before_record: fn interaction ->
+            interaction
+            |> Map.put("custom_metadata", %{"version" => "1.0", "source" => "test"})
+            |> Map.put("tags", ["api", "sku-lookup"])
+          end
+        ],
+        fn plug ->
+          Req.post!(
+            "http://localhost:#{bypass.port}/api",
+            body: "Get SKU 1234-5678",
+            plug: plug
+          )
+        end
+      )
+
+      # Read the cassette file and verify custom keys are preserved
+      cassette_path = Path.join(@cassette_dir, "before_record_with_template.json")
+      {:ok, cassette_json} = File.read(cassette_path)
+      {:ok, cassette} = Jason.decode(cassette_json)
+
+      interaction = List.first(cassette["interactions"])
+
+      # Template metadata should be present
+      assert interaction["template"]["enabled"] == true
+      assert interaction["template"]["patterns"]["sku"]["source"] == "\\d{4}-\\d{4}"
+
+      # Custom keys from before_record should be preserved
+      assert interaction["custom_metadata"] == %{"version" => "1.0", "source" => "test"}
+      assert interaction["tags"] == ["api", "sku-lookup"]
+
+      # Standard keys should still exist
+      assert is_map(interaction["request"])
+      assert is_map(interaction["response"])
+      assert interaction["recorded_at"]
+    end
+  end
 end
