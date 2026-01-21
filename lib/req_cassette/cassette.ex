@@ -1089,7 +1089,9 @@ defmodule ReqCassette.Cassette do
         {name, Enum.uniq(values)}
       end)
 
-    %{
+    # Preserve any custom keys added by before_record or other hooks
+    # by merging template-specific keys into the existing interaction
+    Map.merge(interaction, %{
       "template" => %{
         "enabled" => true,
         "patterns" => serialize_patterns(patterns),
@@ -1100,9 +1102,8 @@ defmodule ReqCassette.Cassette do
         }
       },
       "request" => templated_request,
-      "response" => templated_response,
-      "recorded_at" => interaction["recorded_at"]
-    }
+      "response" => templated_response
+    })
   end
 
   # Serialize regex patterns for JSON storage (preserving source and options)
