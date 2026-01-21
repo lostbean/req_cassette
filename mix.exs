@@ -4,7 +4,7 @@ defmodule ReqCassette.MixProject do
   def project do
     [
       app: :req_cassette,
-      version: "0.3.2",
+      version: "0.4.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -84,7 +84,6 @@ defmodule ReqCassette.MixProject do
         "docs/MIGRATION_V0.2_TO_V0.3.md": [title: "Migration Guide (v0.2 → v0.3)"],
         "docs/MIGRATION_V0.1_TO_V0.2.md": [title: "Migration Guide (v0.1 → v0.2)"]
       ],
-      source_ref: "v0.3.0",
       formatters: ["html"],
       groups_for_extras: [
         Guides: ~r/docs\/guides/,
