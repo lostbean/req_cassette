@@ -6,7 +6,8 @@
       "WebFetch(domain:agentclientprotocol.com)",
       "Bash(/Users/edgar/.npm-global/bin/claude-code-acp)",
       "Bash(mix:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(elixir:*)"
     ],
     "deny": [],
     "ask": []

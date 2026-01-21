@@ -4,6 +4,7 @@ defmodule ReqCassette.Template.IntegrationTest do
   import ReqCassette
 
   alias Plug.Conn
+  alias ReqCassette.Cassette
 
   @cassette_dir "test/fixtures/template_integration"
 
@@ -478,6 +479,125 @@ defmodule ReqCassette.Template.IntegrationTest do
 
       # This should be a newly recorded interaction since body didn't match
       assert result.body["newly_recorded"] == true
+    end
+  end
+
+  describe "regex pattern persistence" do
+    @tag capture_log: true
+    test "can reload cassettes with regex patterns containing options" do
+      bypass = Bypass.open()
+
+      # Record with a case-insensitive regex pattern
+      Bypass.expect_once(bypass, "POST", "/api", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{"sku" => "ABC-1234"}))
+      end)
+
+      # First call - records the cassette with case-insensitive pattern
+      with_cassette(
+        "regex_with_options",
+        [
+          cassette_dir: @cassette_dir,
+          template: [
+            # Case-insensitive pattern - should serialize opts correctly
+            patterns: [sku: ~r/[A-Z]{3}-\d{4}/i]
+          ]
+        ],
+        fn plug ->
+          Req.post!(
+            "http://localhost:#{bypass.port}/api",
+            body: "Get SKU ABC-1234",
+            plug: plug
+          )
+        end
+      )
+
+      # Verify the cassette was saved with options
+      cassette_path = Path.join(@cassette_dir, "regex_with_options.json")
+      {:ok, cassette_json} = File.read(cassette_path)
+      {:ok, cassette} = Jason.decode(cassette_json)
+
+      interaction = List.first(cassette["interactions"])
+      pattern_opts = interaction["template"]["patterns"]["sku"]["opts"]
+      # Regex.opts(~r//i) returns [:caseless], which becomes ["caseless"] in JSON
+      assert "caseless" in pattern_opts
+
+      # Second call - this should load the cassette and deserialize the regex
+      # WITHOUT crashing. This is the bug: String.to_existing_atom("caseless")
+      # may fail, and even if it didn't, Regex.compile!/2 expects a string like "i"
+      result =
+        with_cassette(
+          "regex_with_options",
+          [
+            cassette_dir: @cassette_dir,
+            template: [
+              patterns: [sku: ~r/[A-Z]{3}-\d{4}/i]
+            ]
+          ],
+          fn plug ->
+            # Use different SKU - should match via template
+            Req.post!(
+              "http://localhost:#{bypass.port}/api",
+              body: "Get SKU XYZ-9999",
+              plug: plug
+            )
+          end
+        )
+
+      # Should replay successfully with substituted value
+      assert result.status == 200
+      assert result.body["sku"] == "XYZ-9999"
+    end
+  end
+
+  describe "pattern caching" do
+    @tag capture_log: true
+    test "patterns are compiled once during cassette load, not on every match" do
+      bypass = Bypass.open()
+
+      # Record a cassette
+      Bypass.expect_once(bypass, "POST", "/api", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{"sku" => "1234-5678"}))
+      end)
+
+      with_cassette(
+        "cached_patterns",
+        [
+          cassette_dir: @cassette_dir,
+          template: [
+            patterns: [sku: ~r/\d{4}-\d{4}/]
+          ]
+        ],
+        fn plug ->
+          Req.post!(
+            "http://localhost:#{bypass.port}/api",
+            body: "Get SKU 1234-5678",
+            plug: plug
+          )
+        end
+      )
+
+      # Load the cassette and verify patterns are compiled during load
+      cassette_path = Path.join(@cassette_dir, "cached_patterns.json")
+      {:ok, cassette} = Cassette.load(cassette_path)
+
+      # Get the first interaction's compiled patterns
+      interaction = List.first(cassette["interactions"])
+      compiled_patterns = get_in(interaction, ["template", "compiled_patterns"])
+
+      # Patterns should be compiled (Regex structs, not maps with source/opts)
+      assert compiled_patterns != nil
+      assert is_map(compiled_patterns)
+      assert Map.has_key?(compiled_patterns, :sku)
+      assert %Regex{} = compiled_patterns[:sku]
+
+      # Verify the regex works correctly
+      assert Regex.match?(compiled_patterns[:sku], "1234-5678")
+      assert Regex.match?(compiled_patterns[:sku], "9999-0000")
+      refute Regex.match?(compiled_patterns[:sku], "abc")
     end
   end
 end
