@@ -373,6 +373,115 @@ defmodule ReqCassette.Cassette do
   end
 
   @doc """
+  Diagnoses why a request didn't match any interaction in the cassette.
+
+  Returns detailed diagnostic information for each interaction showing which
+  matchers matched and which didn't, along with the stored and incoming values.
+
+  ## Parameters
+
+  - `cassette` - The cassette map
+  - `conn` - The `Plug.Conn` struct representing the current request
+  - `request_body` - The raw request body as a binary string
+  - `match_on` - List of matchers to check
+  - `filter_opts` - Optional filter options (default: `%{}`)
+
+  ## Returns
+
+  A list of diagnostic maps, one per interaction:
+
+      [
+        %{
+          index: 0,
+          results: %{
+            method: {:match, "POST", "POST"},
+            uri: {:no_match, "https://stored.url", "https://incoming.url"},
+            ...
+          }
+        },
+        ...
+      ]
+
+  ## Examples
+
+      diagnostics = diagnose_mismatch(cassette, conn, body, [:method, :uri])
+      formatted = format_mismatch_diagnostics(diagnostics, [:method, :uri])
+  """
+  @spec diagnose_mismatch(map(), Plug.Conn.t(), binary(), [atom()], map()) :: list(map())
+  def diagnose_mismatch(cassette, conn, request_body, match_on, filter_opts \\ %{}) do
+    interactions = Map.get(cassette, "interactions", [])
+    incoming_request = build_incoming_request(conn, request_body, filter_opts)
+
+    interactions
+    |> Enum.with_index()
+    |> Enum.map(fn {interaction, index} ->
+      results = diagnose_interaction(interaction, incoming_request, match_on, filter_opts, conn)
+      %{index: index, results: results}
+    end)
+  end
+
+  @doc """
+  Formats diagnostic results into a human-readable string.
+
+  ## Parameters
+
+  - `diagnostics` - List of diagnostic maps from `diagnose_mismatch/5`
+  - `match_on` - List of matchers being checked
+
+  ## Returns
+
+  A formatted string showing match status and details for mismatches.
+
+  ## Examples
+
+      diagnostics = diagnose_mismatch(cassette, conn, body, [:method, :uri])
+      IO.puts(format_mismatch_diagnostics(diagnostics, [:method, :uri]))
+
+      # Output:
+      # 🟢 :method match
+      # 🔴 :uri NO match
+      #
+      # 🔬 :uri details
+      #
+      # Record 1:
+      # stored: "https://api.example.com/old"
+      # value:  "https://api.example.com/new"
+  """
+  @spec format_mismatch_diagnostics(list(map()), [atom()]) :: String.t()
+  def format_mismatch_diagnostics(diagnostics, match_on) do
+    # Calculate overall match status across all interactions
+    overall_status = calculate_overall_match_status(diagnostics, match_on)
+
+    # Build summary section
+    summary =
+      match_on
+      |> Enum.map(fn matcher ->
+        case Map.get(overall_status, matcher) do
+          :match -> "🟢 :#{matcher} match"
+          :no_match -> "🔴 :#{matcher} NO match"
+          _ -> "⚪ :#{matcher} unknown"
+        end
+      end)
+      |> Enum.join("\n")
+
+    # Build details section for mismatched fields
+    mismatched_fields =
+      overall_status
+      |> Enum.filter(fn {_field, status} -> status == :no_match end)
+      |> Enum.map(fn {field, _} -> field end)
+
+    details =
+      mismatched_fields
+      |> Enum.map(fn field ->
+        field_details = format_field_details(diagnostics, field)
+        "\n🔬 :#{field} details\n#{field_details}"
+      end)
+      |> Enum.join("\n")
+
+    summary <> details
+  end
+
+  @doc """
   Saves a cassette to disk as pretty-printed JSON.
 
   ## Parameters
@@ -429,6 +538,134 @@ defmodule ReqCassette.Cassette do
   end
 
   # Private helpers
+
+  # Diagnostic helpers
+
+  defp diagnose_interaction(interaction, incoming_request, match_on, filter_opts, conn) do
+    request = interaction["request"]
+
+    match_on
+    |> Enum.map(fn matcher ->
+      {status, stored, incoming} =
+        diagnose_matcher(matcher, request, incoming_request, filter_opts, conn)
+
+      {matcher, {status, stored, incoming}}
+    end)
+    |> Enum.into(%{})
+  end
+
+  defp diagnose_matcher(:method, request, incoming_request, _filter_opts, _conn) do
+    stored = request["method"]
+    incoming = incoming_request["method"]
+    matches = String.upcase(stored) == String.upcase(incoming)
+    {if(matches, do: :match, else: :no_match), stored, incoming}
+  end
+
+  defp diagnose_matcher(:uri, request, incoming_request, filter_opts, _conn) do
+    stored = request["uri"]
+
+    incoming =
+      apply_regex_filters_to_string(
+        incoming_request["uri"],
+        filter_opts[:filter_sensitive_data] || []
+      )
+
+    matches = incoming == stored
+    {if(matches, do: :match, else: :no_match), stored, incoming}
+  end
+
+  defp diagnose_matcher(:query, request, incoming_request, filter_opts, _conn) do
+    stored = request["query_string"]
+
+    incoming =
+      apply_regex_filters_to_string(
+        incoming_request["query_string"],
+        filter_opts[:filter_sensitive_data] || []
+      )
+
+    matches = normalize_query(stored) == normalize_query(incoming)
+    {if(matches, do: :match, else: :no_match), stored, incoming}
+  end
+
+  defp diagnose_matcher(:headers, request, incoming_request, filter_opts, _conn) do
+    stored = request["headers"]
+
+    incoming =
+      apply_header_filters(
+        incoming_request["headers"],
+        filter_opts[:filter_request_headers] || []
+      )
+
+    matches = normalize_headers(stored) == normalize_headers(incoming)
+    {if(matches, do: :match, else: :no_match), stored, incoming}
+  end
+
+  defp diagnose_matcher(:body, request, incoming_request, filter_opts, conn) do
+    stored = reconstruct_request_body(request)
+    incoming_raw = reconstruct_request_body(incoming_request)
+
+    incoming =
+      apply_regex_filters_to_string(
+        incoming_raw,
+        filter_opts[:filter_sensitive_data] || []
+      )
+
+    matches = bodies_match?(request, incoming, conn.req_headers)
+    {if(matches, do: :match, else: :no_match), stored, incoming}
+  end
+
+  defp diagnose_matcher(_matcher, _request, _incoming_request, _filter_opts, _conn) do
+    {:match, nil, nil}
+  end
+
+  defp calculate_overall_match_status(diagnostics, match_on) do
+    # For each matcher, if ANY interaction matched on that field, mark as :match
+    # Otherwise :no_match
+    match_on
+    |> Enum.map(fn matcher ->
+      any_matched =
+        Enum.any?(diagnostics, fn %{results: results} ->
+          case Map.get(results, matcher) do
+            {:match, _, _} -> true
+            _ -> false
+          end
+        end)
+
+      {matcher, if(any_matched, do: :match, else: :no_match)}
+    end)
+    |> Enum.into(%{})
+  end
+
+  defp format_field_details(diagnostics, field) do
+    diagnostics
+    |> Enum.map(fn %{index: index, results: results} ->
+      case Map.get(results, field) do
+        {_status, stored, incoming} ->
+          """
+
+          Record #{index + 1}:
+          stored: #{format_value(stored)}
+          value:  #{format_value(incoming)}
+          """
+
+        _ ->
+          ""
+      end
+    end)
+    |> Enum.join("")
+  end
+
+  defp format_value(nil), do: "nil"
+  defp format_value(value) when is_binary(value), do: truncate_value(inspect(value))
+  defp format_value(value) when is_map(value), do: truncate_value(inspect(value))
+  defp format_value(value), do: truncate_value(inspect(value))
+
+  @max_value_length 200
+  defp truncate_value(str) when byte_size(str) > @max_value_length do
+    String.slice(str, 0, @max_value_length) <> "..."
+  end
+
+  defp truncate_value(str), do: str
 
   defp build_interaction(conn, request_body, response) do
     req_body_type = BodyType.detect_type(request_body, conn.req_headers |> headers_to_map())

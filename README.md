@@ -80,11 +80,11 @@ end
 
 #### Quick Reference
 
-| Mode      | When to Use                  | Cassette Behavior                          |
-| --------- | ---------------------------- | ------------------------------------------ |
+| Mode      | When to Use                      | Cassette Behavior                          |
+| --------- | -------------------------------- | ------------------------------------------ |
 | `:record` | **Default - use for most tests** | Records new interactions, replays existing |
-| `:replay` | CI/CD, deterministic testing | Only replays, errors if cassette missing   |
-| `:bypass` | Debugging, temporary disable | Ignores cassettes, always hits network     |
+| `:replay` | CI/CD, deterministic testing     | Only replays, errors if cassette missing   |
+| `:bypass` | Debugging, temporary disable     | Ignores cassettes, always hits network     |
 
 #### Examples
 
@@ -127,13 +127,52 @@ end
 
 #### Best Practices
 
-1. **Use `:record` by default** - Safe for all test types (single or multi-request)
+1. **Use `:record` by default** - Safe for all test types (single or
+   multi-request)
 2. **Use `:replay` in CI** - Ensures tests don't make unexpected API calls
-3. **Delete cassettes to re-record** - Remove the cassette file to force a fresh recording
+3. **Delete cassettes to re-record** - Remove the cassette file to force a fresh
+   recording
+
+### Mismatch Diagnostics
+
+When a request doesn't match any stored interaction, ReqCassette provides
+detailed diagnostics to help you identify the problem:
+
+```
+** (RuntimeError) ReqCassette: No matching interaction found in cassette test/cassettes/api.json
+
+Request: POST /api/users
+Matching on: [:method, :uri, :query, :headers, :body]
+
+This cassette exists but doesn't contain a matching interaction.
+Either add the interaction to the cassette or use mode: :record.
+
+🟢 :method match
+🔴 :uri NO match
+🟢 :query match
+🟢 :headers match
+🟢 :body match
+
+🔬 :uri details
+
+Record 1:
+stored: "https://api.example.com/api/v1/users"
+value:  "https://api.example.com/api/v2/users"
+```
+
+The diagnostics show:
+
+- **Summary** - Which matchers matched (🟢) and which didn't (🔴)
+- **Details** - For mismatched fields, the stored vs incoming values for each
+  record
+
+This makes it easy to identify why a cassette isn't matching - whether it's a
+changed URL, different headers, modified request body, etc.
 
 ### Sensitive Data Filtering
 
-**⚠️ Critical for LLM APIs:** Always filter authorization headers to prevent API keys from being saved to cassettes.
+**⚠️ Critical for LLM APIs:** Always filter authorization headers to prevent API
+keys from being saved to cassettes.
 
 ```elixir
 with_cassette "auth",
@@ -152,7 +191,10 @@ with_cassette "auth",
   end
 ```
 
-**📖 See the [Sensitive Data Filtering Guide](docs/SENSITIVE_DATA_FILTERING.md)** for comprehensive documentation on protecting secrets, common patterns, and best practices.
+**📖 See the
+[Sensitive Data Filtering Guide](docs/SENSITIVE_DATA_FILTERING.md)** for
+comprehensive documentation on protecting secrets, common patterns, and best
+practices.
 
 ### Custom Request Matching
 

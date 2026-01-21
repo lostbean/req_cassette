@@ -473,6 +473,9 @@ defmodule ReqCassette.Plug do
             |> Conn.halt()
 
           :not_found ->
+            diagnostics = Cassette.diagnose_mismatch(cassette, conn, body, match_on, filter_opts)
+            diagnostics_str = Cassette.format_mismatch_diagnostics(diagnostics, match_on)
+
             raise """
             ReqCassette: No matching interaction found in cassette #{path}
 
@@ -481,6 +484,8 @@ defmodule ReqCassette.Plug do
 
             This cassette exists but doesn't contain a matching interaction.
             Either add the interaction to the cassette or use mode: :record.
+
+            #{diagnostics_str}
             """
         end
 
