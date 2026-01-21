@@ -7,7 +7,8 @@
       "Bash(/Users/edgar/.npm-global/bin/claude-code-acp)",
       "Bash(mix:*)",
       "Bash(find:*)",
-      "Bash(elixir:*)"
+      "Bash(elixir:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

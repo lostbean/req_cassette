@@ -5,9 +5,11 @@
 [![GitHub CI](https://github.com/lostbean/req_cassette/workflows/CI/badge.svg)](https://github.com/lostbean/req_cassette/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **⚠️ Upgrading from v0.1?** See the
-> [Migration Guide](docs/MIGRATION_V0.1_TO_V0.2.md) for breaking changes and
-> upgrade instructions.
+> **⚠️ Upgrading?** See migration guides for breaking changes:
+>
+> - [v0.4 → v0.5](docs/MIGRATION_V0.4_TO_V0.5.md) - Cross-process session
+>   support
+> - [v0.1 → v0.2](docs/MIGRATION_V0.1_TO_V0.2.md) - API changes from v0.1
 
 A VCR-style record-and-replay library for Elixir's [Req](https://hexdocs.pm/req)
 HTTP client. Record HTTP responses to "cassettes" and replay them in tests for
@@ -30,7 +32,10 @@ like Anthropic's Claude!
 - 🎚️ **Multiple Recording Modes** - Flexible control over when to record/replay
 - 📦 **Multiple Interactions** - Store many request/response pairs in one
   cassette
-- 🎭 **Templating** - Parameterized cassettes for dynamic values (IDs, timestamps, etc.)
+- 🎭 **Templating** - Parameterized cassettes for dynamic values (IDs,
+  timestamps, etc.)
+- 🔀 **Cross-Process Support** - Explicit shared sessions for Task.async and
+  GenServer
 
 ## Quick Start
 
@@ -199,7 +204,9 @@ practices.
 
 ### Templating
 
-**Parameterized cassettes** for testing APIs with dynamic values. One cassette can handle multiple requests with different IDs, timestamps, or other varying data.
+**Parameterized cassettes** for testing APIs with dynamic values. One cassette
+can handle multiple requests with different IDs, timestamps, or other varying
+data.
 
 #### Quick Example
 
@@ -291,7 +298,8 @@ test "LLM chat with varying conversation IDs" do
 end
 ```
 
-**📖 See the [Templating Guide](docs/guides/templating.md)** for comprehensive documentation, advanced patterns, debugging tips, and best practices.
+**📖 See the [Templating Guide](docs/guides/templating.md)** for comprehensive
+documentation, advanced patterns, debugging tips, and best practices.
 
 ### Custom Request Matching
 
@@ -435,6 +443,99 @@ with_cassette "example",
   end
 ```
 
+## Sequential Matching
+
+By default, ReqCassette uses **first-match**: same request always returns same
+response. This works well for most tests:
+
+```elixir
+with_cassette "api_test", fn plug ->
+  Req.get!("/users/1", plug: plug)  # → Alice
+  Req.get!("/users/2", plug: plug)  # → Bob
+  Req.get!("/users/1", plug: plug)  # → Alice (same as first call)
+end
+```
+
+For cases where identical requests should return **different responses**
+(polling, state changes), enable sequential matching with `sequential: true`:
+
+```elixir
+# Polling API that returns different states over time
+with_cassette "polling_test", [sequential: true], fn plug ->
+  Req.get!("/job/status", plug: plug)  # → {"status": "pending"}
+  Req.get!("/job/status", plug: plug)  # → {"status": "running"}
+  Req.get!("/job/status", plug: plug)  # → {"status": "completed"}
+end
+```
+
+**Templates automatically enable sequential matching** - no need to add
+`sequential: true` when using `template: [...]`.
+
+## Cross-Process Sequential Matching (Task.async, GenServer, etc.)
+
+> **⚠️ Note:** Shared sessions are only needed for **sequential matching** with
+> spawned processes. If you use the default first-match behavior, no special
+> handling is needed.
+
+When using sequential matching with spawned processes, the process dictionary
+can't be shared. Use `start_shared_session/0`:
+
+```elixir
+# ✅ WITH shared session - all processes share sequential state
+session = ReqCassette.start_shared_session()
+try do
+  with_cassette "parallel_requests", [session: session, sequential: true], fn plug ->
+    tasks = for i <- 1..3 do
+      Task.async(fn ->
+        Req.post!("https://api.example.com", plug: plug, json: %{id: i})
+      end)
+    end
+    results = Task.await_many(tasks)
+    # Tasks correctly get interactions 0, 1, 2 (in order of execution)
+  end
+after
+  ReqCassette.end_shared_session(session)
+end
+```
+
+### When You Need Shared Sessions
+
+You need a shared session when ALL of these apply:
+
+- Using sequential matching (`sequential: true` or `template: [...]`)
+- Making HTTP requests from spawned processes (Task.async, GenServer, etc.)
+
+You do NOT need a shared session when:
+
+- Using default first-match behavior (most common case)
+- All requests are made from the same process
+
+### Best Practice for Test Setup
+
+For tests with cross-process sequential matching, use ExUnit's setup:
+
+```elixir
+defmodule MyApp.ParallelAPITest do
+  use ExUnit.Case, async: true
+  import ReqCassette
+
+  setup do
+    session = ReqCassette.start_shared_session()
+    on_exit(fn -> ReqCassette.end_shared_session(session) end)
+    %{session: session}
+  end
+
+  test "parallel API calls", %{session: session} do
+    with_cassette "parallel_test", [session: session, sequential: true], fn plug ->
+      tasks = for i <- 1..3 do
+        Task.async(fn -> Req.get!("https://api.example.com/#{i}", plug: plug) end)
+      end
+      Task.await_many(tasks)
+    end
+  end
+end
+```
+
 ## Why ReqCassette over ExVCR?
 
 | Feature                  | ReqCassette                  | ExVCR                    |
@@ -476,10 +577,16 @@ ANTHROPIC_API_KEY=sk-... mix run examples/req_llm_demo.exs
 
 ### Guides
 
-- **[Templating Guide](docs/guides/templating.md)** - Parameterized cassettes for dynamic values
-- **[Sensitive Data Filtering Guide](docs/SENSITIVE_DATA_FILTERING.md)** - Protect API keys and secrets
-- **[ReqLLM Integration Guide](docs/REQ_LLM_INTEGRATION.md)** - Testing LLM applications
-- **[Migration Guide](docs/MIGRATION_V0.1_TO_V0.2.md)** - Upgrading from v0.1 to v0.2
+- **[Templating Guide](docs/guides/templating.md)** - Parameterized cassettes
+  for dynamic values
+- **[Sensitive Data Filtering Guide](docs/SENSITIVE_DATA_FILTERING.md)** -
+  Protect API keys and secrets
+- **[ReqLLM Integration Guide](docs/REQ_LLM_INTEGRATION.md)** - Testing LLM
+  applications
+- **[Migration Guide v0.4 → v0.5](docs/MIGRATION_V0.4_TO_V0.5.md)** -
+  Cross-process session support
+- **[Migration Guide v0.1 → v0.2](docs/MIGRATION_V0.1_TO_V0.2.md)** - API
+  changes from v0.1
 
 ### Reference
 

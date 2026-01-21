@@ -270,6 +270,7 @@ defmodule ReqCassette.Plug do
   alias Req.Steps
   alias ReqCassette.BodyType
   alias ReqCassette.Cassette
+  alias ReqCassette.Session
 
   @typedoc """
   Options for configuring the cassette plug.
@@ -464,32 +465,14 @@ defmodule ReqCassette.Plug do
       {:ok, cassette} ->
         match_on = opts[:match_requests_on] || [:method, :uri, :query, :headers, :body]
         filter_opts = extract_filter_opts(opts)
-
-        # Build and filter request ONCE at entry point
         filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
 
-        case Cassette.find_interaction(cassette, filtered_request, match_on) do
+        case find_matching_interaction_replay(cassette, filtered_request, match_on, path, opts) do
           {:ok, response} ->
-            conn
-            |> put_resp_headers(response["headers"])
-            |> send_resp(response["status"], BodyType.decode(response))
-            |> Conn.halt()
+            send_cached_response(conn, response)
 
           :not_found ->
-            diagnostics = Cassette.diagnose_mismatch(cassette, conn, body, match_on, filter_opts)
-            diagnostics_str = Cassette.format_mismatch_diagnostics(diagnostics, match_on)
-
-            raise """
-            ReqCassette: No matching interaction found in cassette #{path}
-
-            Request: #{conn.method} #{conn.request_path}
-            Matching on: #{inspect(match_on)}
-
-            This cassette exists but doesn't contain a matching interaction.
-            Either add the interaction to the cassette or use mode: :record.
-
-            #{diagnostics_str}
-            """
+            raise_no_match_error(cassette, conn, body, match_on, filter_opts, path)
         end
 
       :not_found ->
@@ -507,47 +490,129 @@ defmodule ReqCassette.Plug do
 
     case Cassette.load(path) do
       {:ok, cassette} ->
-        # Cassette exists - try to find matching interaction
-        match_on = opts[:match_requests_on] || [:method, :uri, :query, :headers, :body]
-        filter_opts = extract_filter_opts(opts)
-
-        # Build and filter request ONCE at entry point
-        filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
-
-        case Cassette.find_interaction(cassette, filtered_request, match_on) do
-          {:ok, response} ->
-            # Found matching interaction - replay it
-            conn
-            |> put_resp_headers(response["headers"])
-            |> send_resp(response["status"], BodyType.decode(response))
-            |> Conn.halt()
-
-          :not_found ->
-            # No matching interaction - record new one
-            {conn, resp_or_error} = forward_and_capture(conn, body, opts)
-            resp = normalize_response(resp_or_error)
-
-            # Add new interaction using already-filtered request
-            cassette = Cassette.add_interaction(cassette, filtered_request, resp, opts)
-            Cassette.save(path, cassette)
-
-            resp_to_conn(conn, resp)
-        end
+        handle_record_with_existing_cassette(conn, body, opts, cassette, path)
 
       :not_found ->
-        # Cassette doesn't exist - record new one
-        filter_opts = extract_filter_opts(opts)
-        filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
-
-        {conn, resp_or_error} = forward_and_capture(conn, body, opts)
-        resp = normalize_response(resp_or_error)
-
-        cassette = Cassette.new()
-        cassette = Cassette.add_interaction(cassette, filtered_request, resp, opts)
-        Cassette.save(path, cassette)
-
-        resp_to_conn(conn, resp)
+        handle_record_new_cassette(conn, body, opts, path)
     end
+  end
+
+  defp handle_record_with_existing_cassette(conn, body, opts, cassette, path) do
+    match_on = opts[:match_requests_on] || [:method, :uri, :query, :headers, :body]
+    filter_opts = extract_filter_opts(opts)
+    filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
+
+    case find_matching_interaction_record(cassette, filtered_request, match_on, path, opts) do
+      {:ok, response} ->
+        send_cached_response(conn, response)
+
+      :not_found ->
+        record_new_interaction(conn, body, opts, cassette, filtered_request, path)
+    end
+  end
+
+  defp handle_record_new_cassette(conn, body, opts, path) do
+    filter_opts = extract_filter_opts(opts)
+    filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
+
+    record_new_interaction(conn, body, opts, Cassette.new(), filtered_request, path)
+  end
+
+  defp record_new_interaction(conn, body, opts, cassette, filtered_request, path) do
+    {conn, resp_or_error} = forward_and_capture(conn, body, opts)
+    resp = normalize_response(resp_or_error)
+
+    cassette = Cassette.add_interaction(cassette, filtered_request, resp, opts)
+    Cassette.save(path, cassette)
+
+    maybe_advance_session(path, opts)
+    resp_to_conn(conn, resp)
+  end
+
+  # Sequential matching helpers
+
+  # For replay mode: use atomic get-and-advance for concurrent safety
+  defp find_matching_interaction_replay(cassette, filtered_request, match_on, path, opts) do
+    case opts[:session_id] do
+      nil ->
+        # No session: use traditional scanning (backward compatible behavior)
+        Cassette.find_interaction(cassette, filtered_request, match_on)
+
+      session_id ->
+        # With session: use strict sequential matching
+        # Atomic get-and-advance ensures each concurrent request gets a unique index
+        start_index = Session.get_and_advance_index(path, session_id)
+
+        Cassette.find_interaction_sequential(
+          cassette,
+          filtered_request,
+          match_on,
+          start_index
+        )
+        |> case do
+          {:ok, response, _matched_index} -> {:ok, response}
+          :not_found -> :not_found
+        end
+    end
+  end
+
+  # For record mode: don't advance atomically (advance happens after recording)
+  defp find_matching_interaction_record(cassette, filtered_request, match_on, path, opts) do
+    case opts[:session_id] do
+      nil ->
+        # No session: use traditional scanning (backward compatible behavior)
+        Cassette.find_interaction(cassette, filtered_request, match_on)
+
+      session_id ->
+        # With session: use strict sequential matching
+        start_index = Session.get_current_index(path, session_id)
+
+        Cassette.find_interaction_sequential(
+          cassette,
+          filtered_request,
+          match_on,
+          start_index
+        )
+        |> case do
+          {:ok, response, _matched_index} ->
+            # Advance after successful match
+            Session.advance_index(path, session_id)
+            {:ok, response}
+
+          :not_found ->
+            :not_found
+        end
+    end
+  end
+
+  defp maybe_advance_session(path, opts) do
+    if opts[:session_id] do
+      Session.advance_index(path, opts[:session_id])
+    end
+  end
+
+  defp send_cached_response(conn, response) do
+    conn
+    |> put_resp_headers(response["headers"])
+    |> send_resp(response["status"], BodyType.decode(response))
+    |> Conn.halt()
+  end
+
+  defp raise_no_match_error(cassette, conn, body, match_on, filter_opts, path) do
+    diagnostics = Cassette.diagnose_mismatch(cassette, conn, body, match_on, filter_opts)
+    diagnostics_str = Cassette.format_mismatch_diagnostics(diagnostics, match_on)
+
+    raise """
+    ReqCassette: No matching interaction found in cassette #{path}
+
+    Request: #{conn.method} #{conn.request_path}
+    Matching on: #{inspect(match_on)}
+
+    This cassette exists but doesn't contain a matching interaction.
+    Either add the interaction to the cassette or use mode: :record.
+
+    #{diagnostics_str}
+    """
   end
 
   defp extract_filter_opts(opts) do
@@ -712,16 +777,10 @@ defmodule ReqCassette.Plug do
 
         name ->
           # Use human-readable name
-          sanitize_filename(name) <> ".json"
+          Cassette.sanitize_filename(name) <> ".json"
       end
 
     Path.join(dir, filename)
-  end
-
-  defp sanitize_filename(name) do
-    name
-    |> String.replace(~r/[^\w\s\-]/, "_")
-    |> String.replace(~r/\s+/, "_")
   end
 
   defp normalize_response(resp_or_error) do

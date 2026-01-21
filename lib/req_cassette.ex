@@ -17,6 +17,7 @@ defmodule ReqCassette do
   - 🎚️ **Multiple Recording Modes** - Flexible control over when to record/replay
   - 📦 **Multiple Interactions** - Store many request/response pairs in one cassette
   - 🎭 **Templating** - Parameterized cassettes for dynamic values (IDs, timestamps, etc.)
+  - 🔀 **Cross-Process Support** - Explicit shared sessions for Task.async and GenServer
 
   ## Quick Start
 
@@ -33,18 +34,12 @@ defmodule ReqCassette do
   **First run**: Records to `test/cassettes/github_user.json`
   **Subsequent runs**: Replays instantly from cassette (no network!)
 
-  ## Upgrading from v0.1
+  ## Upgrading
 
-  > **⚠️ Important:** v0.2.0 introduces breaking changes to improve the API and cassette format.
-  > See the [Migration Guide](https://hexdocs.pm/req_cassette/migration_v0.1_to_v0.2.html) for upgrade instructions.
-
-  **Key changes:**
-  - New `with_cassette/3` API (replaces direct plug usage)
-  - Cassette format v1.0 with multiple interactions
-  - Human-readable cassette filenames
-  - Pretty-printed JSON (40% smaller, much more readable)
-
-  **Migration time:** ~15-30 minutes for most projects
+  > **⚠️ Migration guides for breaking changes:**
+  >
+  > - [v0.4 → v0.5](https://hexdocs.pm/req_cassette/migration_v0.4_to_v0.5.html) - Cross-process session support
+  > - [v0.1 → v0.2](https://hexdocs.pm/req_cassette/migration_v0.1_to_v0.2.html) - API changes from v0.1
 
   ## Installation
 
@@ -53,7 +48,7 @@ defmodule ReqCassette do
       def deps do
         [
           {:req, "~> 0.5.15"},
-          {:req_cassette, "~> 0.2.0"}
+          {:req_cassette, "~> 0.5.0"}
         ]
       end
 
@@ -219,6 +214,78 @@ defmodule ReqCassette do
 
   **📖 For comprehensive templating documentation, see the
   [Templating Guide](https://hexdocs.pm/req_cassette/guides/templating.html).**
+
+  ## Cross-Process Requests (Task.async, GenServer, etc.)
+
+  > **⚠️ Important:** If your tests make HTTP requests from spawned processes,
+  > you need to use a shared session.
+
+  By default, ReqCassette tracks request order using the process dictionary, which
+  only works within a single process. If you spawn processes that make HTTP requests
+  (e.g., `Task.async`, `Task.async_stream`, `GenServer`), each spawned process will
+  independently start from interaction 0.
+
+  ### The Problem
+
+      # ❌ WITHOUT shared session - spawned processes don't share state
+      with_cassette "parallel", fn plug ->
+        tasks = for i <- 1..3 do
+          Task.async(fn -> Req.get!("https://api.example.com/\#{i}", plug: plug) end)
+        end
+        Task.await_many(tasks)
+        # Each task matches interaction 0 independently!
+      end
+
+  ### The Solution
+
+  Use `start_shared_session/0` and `end_shared_session/1`:
+
+      # ✅ WITH shared session - all processes share state
+      session = ReqCassette.start_shared_session()
+      try do
+        with_cassette "parallel", [session: session], fn plug ->
+          tasks = for i <- 1..3 do
+            Task.async(fn -> Req.get!("https://api.example.com/\#{i}", plug: plug) end)
+          end
+          Task.await_many(tasks)
+          # Tasks correctly get interactions 0, 1, 2 (in execution order)
+        end
+      after
+        ReqCassette.end_shared_session(session)
+      end
+
+  ### When You Need Shared Sessions
+
+  **Required for:**
+  - `Task.async/1` or `Task.async_stream/3`
+  - Requests from a `GenServer`
+  - `spawn/1` or `spawn_link/1`
+  - Any HTTP request from a different process
+
+  **Not needed for:**
+  - All requests from the same process (the common case)
+
+  ### Best Practice: ExUnit Setup
+
+      defmodule MyApp.ParallelAPITest do
+        use ExUnit.Case, async: true
+        import ReqCassette
+
+        setup do
+          session = ReqCassette.start_shared_session()
+          on_exit(fn -> ReqCassette.end_shared_session(session) end)
+          %{session: session}
+        end
+
+        test "parallel API calls", %{session: session} do
+          with_cassette "parallel_test", [session: session], fn plug ->
+            tasks = for i <- 1..3 do
+              Task.async(fn -> Req.get!("https://api.example.com/\#{i}", plug: plug) end)
+            end
+            Task.await_many(tasks)
+          end
+        end
+      end
 
   ## Advanced: before_record Hook
 
@@ -449,6 +516,58 @@ defmodule ReqCassette do
   - `:template` - Template configuration for parameterized cassettes (keyword list):
     - `:patterns` - Keyword list of `{name, regex}` pairs (e.g., `[sku: ~r/\\d{4}-\\d{4}/]`)
     - `:allow_key_templates` - Allow JSON key templating (default: false)
+  - `:sequential` - Enable sequential matching (default: `false`, automatically enabled with `:template`)
+  - `:session` - Shared session reference for cross-process sequential matching (see below)
+
+  ## Matching Behavior
+
+  **Default: First-Match** - Requests match the first interaction that matches the
+  request criteria. Same request always returns same response. This is correct for
+  most tests.
+
+      with_cassette "api_test", fn plug ->
+        Req.get!("/users/1", plug: plug)  # → Alice
+        Req.get!("/users/2", plug: plug)  # → Bob
+        Req.get!("/users/1", plug: plug)  # → Alice (same as first call)
+      end
+
+  **Sequential Matching** - Requests match interactions in order (request 1 → interaction 0,
+  request 2 → interaction 1, etc.). Enable with `sequential: true` or `template: [...]`.
+
+      # Polling API that returns different states over time
+      with_cassette "polling_test", [sequential: true], fn plug ->
+        Req.get!("/job/status", plug: plug)  # → {"status": "pending"}
+        Req.get!("/job/status", plug: plug)  # → {"status": "running"}
+        Req.get!("/job/status", plug: plug)  # → {"status": "completed"}
+      end
+
+  Sequential matching is essential for:
+  - Identical requests expecting different responses (polling, state changes)
+  - Templated cassettes where multiple requests have the same structure after templating
+  - Nested `with_cassette` calls using the same cassette name
+
+  ## Cross-Process Sequential Matching (Task.async, GenServer, etc.)
+
+  When using sequential matching with spawned processes, the process dictionary
+  can't be shared. Create a shared session:
+
+      session = ReqCassette.start_shared_session()
+      try do
+        with_cassette "my_test", [session: session, sequential: true], fn plug ->
+          # All requests share the session, even from spawned processes
+          tasks = for i <- 1..3 do
+            Task.async(fn ->
+              Req.post!("https://api.example.com", plug: plug, json: %{id: i})
+            end)
+          end
+          Task.await_many(tasks)
+        end
+      after
+        ReqCassette.end_shared_session(session)
+      end
+
+  The shared session uses an Agent for cross-process state sharing. Without it,
+  each spawned process would independently match from interaction 0.
 
   ## Returns
 
@@ -502,6 +621,19 @@ defmodule ReqCassette do
             json: %{username: "alice", password: "secret"},
             plug: plug)
         end
+
+      # Cross-process requests with shared session
+      session = ReqCassette.start_shared_session()
+      try do
+        with_cassette "parallel_api", [session: session], fn plug ->
+          tasks = for i <- 1..3 do
+            Task.async(fn -> Req.get!("https://api.example.com/\#{i}", plug: plug) end)
+          end
+          Task.await_many(tasks)
+        end
+      after
+        ReqCassette.end_shared_session(session)
+      end
   """
   @spec with_cassette(String.t(), keyword(), (plug :: term() -> result)) :: result
         when result: any()
@@ -513,8 +645,59 @@ defmodule ReqCassette do
     with_cassette(name, [], fun)
   end
 
+  @doc """
+  Creates a shared session for cross-process cassette matching.
+
+  Use this when making HTTP requests from spawned processes (`Task.async`,
+  `Task.async_stream`, `GenServer`, etc.). Pass the returned session to
+  `with_cassette/3` via the `:session` option.
+
+  Always call `end_shared_session/1` when done, preferably in an `after` block.
+
+  ## Example
+
+      session = ReqCassette.start_shared_session()
+      try do
+        with_cassette "my_test", [session: session, template: [preset: :common]], fn plug ->
+          Task.async(fn -> Req.post!(..., plug: plug) end) |> Task.await()
+        end
+      after
+        ReqCassette.end_shared_session(session)
+      end
+
+  ## Why is this needed?
+
+  By default, sequential matching state is stored in the process dictionary,
+  which is per-process. Spawned processes can't see or update the parent's state,
+  so each would match from interaction 0.
+
+  Shared sessions use an Agent process for cross-process state sharing, allowing all
+  processes to coordinate sequential matching correctly.
+  """
+  @spec start_shared_session() :: pid()
+  defdelegate start_shared_session(), to: ReqCassette.Session
+
+  @doc """
+  Ends a shared session by stopping its Agent process.
+
+  Should be called in an `after` block to ensure cleanup even on errors.
+
+  ## Example
+
+      session = ReqCassette.start_shared_session()
+      try do
+        with_cassette "my_test", [session: session], fn plug -> ... end
+      after
+        ReqCassette.end_shared_session(session)
+      end
+  """
+  @spec end_shared_session(pid()) :: :ok
+  defdelegate end_shared_session(session), to: ReqCassette.Session
+
   # 3-arity: with_cassette(name, opts, fun)
   def with_cassette(name, opts, fun) when is_function(fun, 1) do
+    alias ReqCassette.{Cassette, Session}
+
     # Validate and process template options if present
     template_opts =
       if opts[:template] do
@@ -523,9 +706,32 @@ defmodule ReqCassette do
         nil
       end
 
+    cassette_dir = opts[:cassette_dir] || "test/cassettes"
+
+    # Calculate cassette path for session tracking
+    cassette_path = Path.join(cassette_dir, Cassette.sanitize_filename(name) <> ".json")
+
+    # Sequential matching: enabled explicitly via `sequential: true` or implicitly via `template:`
+    # When enabled, requests match interactions in order (request 1 → interaction 0, etc.)
+    # When disabled (default), first-match is used (same request always gets same response)
+    use_sequential = opts[:sequential] == true || template_opts != nil
+
+    # Check for shared session (for cross-process matching)
+    # If provided, uses Agent for cross-process state sharing
+    # Otherwise, uses process dictionary (works for single-process tests)
+    shared_session = opts[:session]
+
+    # Start session only if sequential matching is enabled
+    session_id =
+      if use_sequential do
+        Session.start_session(cassette_path, shared_session)
+      else
+        nil
+      end
+
     plug_opts = %{
       cassette_name: name,
-      cassette_dir: opts[:cassette_dir] || "test/cassettes",
+      cassette_dir: cassette_dir,
       mode: opts[:mode] || :record,
       match_requests_on: opts[:match_requests_on] || [:method, :uri, :query, :headers, :body],
       filter_sensitive_data: opts[:filter_sensitive_data] || [],
@@ -534,11 +740,20 @@ defmodule ReqCassette do
       filter_request: opts[:filter_request],
       filter_response: opts[:filter_response],
       before_record: opts[:before_record],
-      template: template_opts
+      template: template_opts,
+      session_id: session_id
     }
 
     plug = {ReqCassette.Plug, plug_opts}
-    fun.(plug)
+
+    try do
+      fun.(plug)
+    after
+      # End session if one was started (only for sequential matching)
+      if session_id do
+        Session.end_session(cassette_path, session_id)
+      end
+    end
   end
 
   def with_cassette(name, fun, []) when is_function(fun, 1) do

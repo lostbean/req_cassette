@@ -4,7 +4,7 @@ defmodule ReqCassette.MixProject do
   def project do
     [
       app: :req_cassette,
-      version: "0.4.0",
+      version: "0.5.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -81,6 +81,7 @@ defmodule ReqCassette.MixProject do
         "docs/guides/llm-testing.md": [title: "LLM Testing Guide"],
         "docs/guides/req-llm-integration.md": [title: "ReqLLM Integration"],
         "docs/guides/filtering.md": [title: "Filtering Sensitive Data"],
+        "docs/MIGRATION_V0.4_TO_V0.5.md": [title: "Migration Guide (v0.4 → v0.5)"],
         "docs/MIGRATION_V0.2_TO_V0.3.md": [title: "Migration Guide (v0.2 → v0.3)"],
         "docs/MIGRATION_V0.1_TO_V0.2.md": [title: "Migration Guide (v0.1 → v0.2)"]
       ],
@@ -92,7 +93,8 @@ defmodule ReqCassette.MixProject do
       groups_for_modules: [
         Core: [
           ReqCassette,
-          ReqCassette.Plug
+          ReqCassette.Plug,
+          ReqCassette.Session
         ],
         "Cassette Format": [
           ReqCassette.Cassette,

@@ -1,5 +1,21 @@
 # **ReqCassette: A Full Design Specification for VCR Testing with the Req Library**
 
+> **Note:** This is a historical design document from the initial development of
+> ReqCassette (v0.1-v0.2). While the architectural principles remain valid, some
+> implementation details have evolved. For current API documentation, see:
+>
+> - [README.md](../README.md) - Current API and usage examples
+> - [Templating Guide](guides/templating.md) - Template feature documentation
+> - [Migration Guides](.) - Version upgrade instructions
+>
+> Key changes since this document was written:
+>
+> - The `use_cassette` macro was replaced by `with_cassette/3` function in v0.2
+> - Sequential matching available via `sequential: true` option (v0.5)
+> - Templates automatically enable sequential matching (v0.5)
+> - Cross-process support via `start_shared_session/end_shared_session` (v0.5)
+> - Templating system for parameterized cassettes (v0.3+)
+
 ## **1.0 Executive Summary & Architectural Vision**
 
 This document presents a comprehensive design specification for ReqCassette, a

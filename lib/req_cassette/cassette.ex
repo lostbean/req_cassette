@@ -422,6 +422,53 @@ defmodule ReqCassette.Cassette do
   end
 
   @doc """
+  Finds a matching interaction starting from a given index (for sequential matching).
+
+  This is used when templates are enabled to ensure requests match interactions
+  in order, rather than always matching the first structurally-compatible interaction.
+
+  ## Parameters
+
+  - `cassette` - The cassette map
+  - `filtered_request` - Pre-filtered request map
+  - `match_on` - List of matchers (e.g., `[:method, :uri, :body]`)
+  - `start_index` - The index to start searching from (0-based)
+
+  ## Returns
+
+  - `{:ok, response, matched_index}` - Response and the index that matched
+  - `:not_found` - No matching interaction at the exact start_index
+  """
+  @spec find_interaction_sequential(map(), map(), [atom()], non_neg_integer()) ::
+          {:ok, map(), non_neg_integer()} | :not_found
+  def find_interaction_sequential(cassette, filtered_request, match_on, start_index) do
+    interactions = Map.get(cassette, "interactions", [])
+
+    case Enum.at(interactions, start_index) do
+      nil ->
+        :not_found
+
+      interaction ->
+        cond do
+          # Use template matching if interaction has templates enabled
+          interaction["template"] && interaction["template"]["enabled"] ->
+            case try_template_match(interaction, filtered_request, match_on) do
+              {:ok, response} -> {:ok, response, start_index}
+              :no_match -> :not_found
+            end
+
+          # No templates, use standard exact matching
+          true ->
+            if interaction_matches?(interaction, filtered_request, match_on) do
+              {:ok, interaction["response"], start_index}
+            else
+              :not_found
+            end
+        end
+    end
+  end
+
+  @doc """
   Diagnoses why a request didn't match any interaction in the cassette.
 
   Returns detailed diagnostic information for each interaction showing which
@@ -1228,5 +1275,26 @@ defmodule ReqCassette.Cassette do
     else
       interaction
     end
+  end
+
+  @doc """
+  Sanitizes a cassette name for use as a filename.
+
+  Replaces non-word characters (except spaces and hyphens) with underscores,
+  and collapses whitespace to single underscores.
+
+  ## Examples
+
+      iex> ReqCassette.Cassette.sanitize_filename("my cassette")
+      "my_cassette"
+
+      iex> ReqCassette.Cassette.sanitize_filename("test/with:special*chars")
+      "test_with_special_chars"
+  """
+  @spec sanitize_filename(String.t()) :: String.t()
+  def sanitize_filename(name) do
+    name
+    |> String.replace(~r/[^\w\s\-]/, "_")
+    |> String.replace(~r/\s+/, "_")
   end
 end
