@@ -406,7 +406,7 @@ defmodule ReqCassette.Cassette do
       cond do
         # Use template matching if interaction has templates enabled
         interaction["template"] && interaction["template"]["enabled"] ->
-          case try_template_match(interaction, filtered_request) do
+          case try_template_match(interaction, filtered_request, match_on) do
             {:ok, response} -> {:ok, response}
             # Continue searching
             :no_match -> nil
@@ -992,7 +992,7 @@ defmodule ReqCassette.Cassette do
   defp normalize_json(body), do: body
 
   # Try to match an incoming request against a templated interaction
-  defp try_template_match(interaction, filtered_request) do
+  defp try_template_match(interaction, filtered_request, match_on) do
     # 1. Normalize incoming request (already filtered)
     normalized_incoming = Normalizer.normalize_request(filtered_request)
 
@@ -1010,7 +1010,7 @@ defmodule ReqCassette.Cassette do
     cassette_templated = interaction["request"]
     debug_enabled = get_in(interaction, ["template", "config", "debug"]) || false
 
-    result = Matcher.match?(cassette_templated, templated_incoming)
+    result = Matcher.match?(cassette_templated, templated_incoming, match_on)
 
     # Log the match attempt if debug is enabled
     Debug.log_match_attempt(

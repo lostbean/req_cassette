@@ -87,51 +87,74 @@ defmodule ReqCassette.Template.Matcher do
       iex> match?(cassette_req, incoming_req)
       {:error, %{field: "method", expected: "GET", actual: "POST"}}
   """
-  @spec match?(map(), map()) :: :match | {:error, map()}
-  def match?(cassette_request, incoming_request) do
-    # Compare key fields
-    cond do
-      # Method mismatch
-      not methods_match?(cassette_request, incoming_request) ->
-        {:error,
-         %{
-           field: "method",
-           expected: cassette_request["method"],
-           actual: incoming_request["method"]
-         }}
+  @spec match?(map(), map(), [atom()]) :: :match | {:error, map()}
+  def match?(cassette_request, incoming_request, match_on \\ [:method, :uri, :query, :body]) do
+    # Compare only the fields specified in match_on
+    # This honors the user's match_requests_on option for templated cassettes
+    # Return the first mismatch encountered (in match_on order)
+    Enum.reduce_while(match_on, :match, fn matcher, _acc ->
+      case check_matcher(matcher, cassette_request, incoming_request) do
+        :ok -> {:cont, :match}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
 
-      # URI mismatch
-      not uris_match?(cassette_request, incoming_request) ->
-        {:error,
-         %{
-           field: "uri",
-           expected: cassette_request["uri"],
-           actual: incoming_request["uri"]
-         }}
-
-      # Query string mismatch
-      not query_strings_match?(cassette_request, incoming_request) ->
-        {:error,
-         %{
-           field: "query_string",
-           expected: cassette_request["query_string"] || "",
-           actual: incoming_request["query_string"] || ""
-         }}
-
-      # Body mismatch
-      not bodies_match?(cassette_request, incoming_request) ->
-        {:error,
-         %{
-           field: "body",
-           expected: extract_body_for_comparison(cassette_request),
-           actual: extract_body_for_comparison(incoming_request)
-         }}
-
-      # All match!
-      true ->
-        :match
+  # Check a single matcher, returning :ok or {:error, details}
+  defp check_matcher(:method, cassette_request, incoming_request) do
+    if methods_match?(cassette_request, incoming_request) do
+      :ok
+    else
+      {:error,
+       %{
+         field: "method",
+         expected: cassette_request["method"],
+         actual: incoming_request["method"]
+       }}
     end
   end
+
+  defp check_matcher(:uri, cassette_request, incoming_request) do
+    if uris_match?(cassette_request, incoming_request) do
+      :ok
+    else
+      {:error,
+       %{
+         field: "uri",
+         expected: cassette_request["uri"],
+         actual: incoming_request["uri"]
+       }}
+    end
+  end
+
+  defp check_matcher(:query, cassette_request, incoming_request) do
+    if query_strings_match?(cassette_request, incoming_request) do
+      :ok
+    else
+      {:error,
+       %{
+         field: "query_string",
+         expected: cassette_request["query_string"] || "",
+         actual: incoming_request["query_string"] || ""
+       }}
+    end
+  end
+
+  defp check_matcher(:body, cassette_request, incoming_request) do
+    if bodies_match?(cassette_request, incoming_request) do
+      :ok
+    else
+      {:error,
+       %{
+         field: "body",
+         expected: extract_body_for_comparison(cassette_request),
+         actual: extract_body_for_comparison(incoming_request)
+       }}
+    end
+  end
+
+  # Ignore other matchers (like :headers) for template matching
+  defp check_matcher(_other, _cassette_request, _incoming_request), do: :ok
 
   # Private helpers
 
