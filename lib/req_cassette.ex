@@ -549,10 +549,73 @@ defmodule ReqCassette do
   # Private helpers
 
   defp validate_and_process_template_opts(template_opts) when is_list(template_opts) do
-    # Validate patterns
-    patterns = template_opts[:patterns]
+    preset_patterns = resolve_preset_patterns(template_opts[:preset])
+    explicit_patterns = validate_explicit_patterns(template_opts[:patterns])
 
-    unless patterns && is_list(patterns) && Keyword.keyword?(patterns) do
+    validate_template_requirements(template_opts)
+
+    merged_patterns = Keyword.merge(preset_patterns, explicit_patterns)
+    validate_pattern_types(merged_patterns)
+
+    %{
+      patterns: Map.new(merged_patterns),
+      allow_key_templates: template_opts[:allow_key_templates] || false,
+      debug: template_opts[:debug] || false
+    }
+  end
+
+  defp validate_and_process_template_opts(invalid) do
+    raise ArgumentError, """
+    Template options must be a keyword list.
+
+    Got: #{inspect(invalid)}
+
+    Examples:
+      template: [preset: :anthropic]
+      template: [patterns: [sku: ~r/\\d{4}-\\d{4}/]]
+      template: [preset: :llm, patterns: [order_id: ~r/ORD-\\d+/]]
+    """
+  end
+
+  defp resolve_preset_patterns(nil), do: []
+
+  defp resolve_preset_patterns(preset_name) when is_atom(preset_name) do
+    alias ReqCassette.Template.Presets
+
+    case Presets.get(preset_name) do
+      {:ok, patterns} ->
+        patterns
+
+      {:error, {:unknown_preset, name}} ->
+        raise ArgumentError, """
+        Unknown template preset: #{inspect(name)}
+
+        Available presets: #{inspect(Presets.available())}
+
+        Example usage:
+          template: [preset: :anthropic]
+          template: [preset: :llm]
+        """
+    end
+  end
+
+  defp resolve_preset_patterns(invalid_preset) do
+    alias ReqCassette.Template.Presets
+
+    raise ArgumentError, """
+    Template :preset must be an atom.
+
+    Got: #{inspect(invalid_preset)}
+
+    Available presets: #{inspect(Presets.available())}
+    """
+  end
+
+  defp validate_explicit_patterns(nil), do: []
+  defp validate_explicit_patterns([]), do: []
+
+  defp validate_explicit_patterns(patterns) do
+    unless is_list(patterns) && Keyword.keyword?(patterns) do
       raise ArgumentError, """
       Template :patterns must be a keyword list of {name, regex} pairs.
 
@@ -566,7 +629,35 @@ defmodule ReqCassette do
       """
     end
 
-    # Validate each pattern is a regex
+    patterns
+  end
+
+  defp validate_template_requirements(template_opts) do
+    alias ReqCassette.Template.Presets
+
+    has_preset = template_opts[:preset] != nil
+    has_patterns_key = Keyword.has_key?(template_opts, :patterns)
+
+    unless has_preset || has_patterns_key do
+      raise ArgumentError, """
+      Template requires either :preset or :patterns (or both).
+
+      Examples:
+        # Using a preset
+        template: [preset: :anthropic]
+
+        # Using custom patterns
+        template: [patterns: [sku: ~r/\\d{4}-\\d{4}/]]
+
+        # Combining preset with custom patterns
+        template: [preset: :anthropic, patterns: [order_id: ~r/ORD-\\d+/]]
+
+      Available presets: #{inspect(Presets.available())}
+      """
+    end
+  end
+
+  defp validate_pattern_types(patterns) do
     Enum.each(patterns, fn {name, pattern} ->
       unless is_atom(name) do
         raise ArgumentError,
@@ -578,28 +669,5 @@ defmodule ReqCassette do
               "Template pattern #{inspect(name)} must be a Regex, got: #{inspect(pattern)}"
       end
     end)
-
-    # Convert patterns to map for easier lookup
-    patterns_map = Map.new(patterns)
-
-    # Build processed template opts
-    %{
-      patterns: patterns_map,
-      allow_key_templates: template_opts[:allow_key_templates] || false
-    }
-  end
-
-  defp validate_and_process_template_opts(invalid) do
-    raise ArgumentError, """
-    Template options must be a keyword list.
-
-    Got: #{inspect(invalid)}
-
-    Example:
-      template: [
-        patterns: [sku: ~r/\\d{4}-\\d{4}/],
-        allow_key_templates: false
-      ]
-    """
   end
 end

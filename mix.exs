@@ -78,6 +78,7 @@ defmodule ReqCassette.MixProject do
       main: "ReqCassette",
       extras: [
         "docs/guides/templating.md": [title: "Templating Guide"],
+        "docs/guides/llm-testing.md": [title: "LLM Testing Guide"],
         "docs/guides/req-llm-integration.md": [title: "ReqLLM Integration"],
         "docs/guides/filtering.md": [title: "Filtering Sensitive Data"],
         "docs/MIGRATION_V0.2_TO_V0.3.md": [title: "Migration Guide (v0.2 → v0.3)"],
