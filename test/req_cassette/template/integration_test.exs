@@ -312,4 +312,172 @@ defmodule ReqCassette.Template.IntegrationTest do
       assert interaction["recorded_at"]
     end
   end
+
+  describe "match_requests_on with templates" do
+    @tag capture_log: true
+    test "honors match_requests_on: [:method, :uri] - ignores body differences" do
+      bypass = Bypass.open()
+
+      # Record with one body
+      Bypass.expect_once(bypass, "POST", "/api/items", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{"status" => "ok", "id" => "item-1234"}))
+      end)
+
+      # Record with template
+      result1 =
+        with_cassette(
+          "match_on_method_uri",
+          [
+            cassette_dir: @cassette_dir,
+            match_requests_on: [:method, :uri],
+            template: [
+              patterns: [item_id: ~r/item-\d{4}/]
+            ]
+          ],
+          fn plug ->
+            Req.post!(
+              "http://localhost:#{bypass.port}/api/items",
+              json: %{"name" => "Widget", "quantity" => 5},
+              plug: plug
+            )
+          end
+        )
+
+      assert result1.status == 200
+      assert result1.body["id"] == "item-1234"
+
+      # Replay with COMPLETELY DIFFERENT body - should still match
+      # because match_requests_on only requires method and uri
+      result2 =
+        with_cassette(
+          "match_on_method_uri",
+          [
+            cassette_dir: @cassette_dir,
+            match_requests_on: [:method, :uri],
+            template: [
+              patterns: [item_id: ~r/item-\d{4}/]
+            ]
+          ],
+          fn plug ->
+            Req.post!(
+              "http://localhost:#{bypass.port}/api/items",
+              json: %{"totally" => "different", "body" => true, "extra_fields" => [1, 2, 3]},
+              plug: plug
+            )
+          end
+        )
+
+      # Should replay successfully despite different body
+      assert result2.status == 200
+      assert result2.body["status"] == "ok"
+    end
+
+    @tag capture_log: true
+    test "honors match_requests_on: [:method, :uri] - ignores query string differences" do
+      bypass = Bypass.open()
+
+      # Record with query string
+      Bypass.expect_once(bypass, "GET", "/api/search", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{"results" => []}))
+      end)
+
+      result1 =
+        with_cassette(
+          "match_on_ignore_query",
+          [
+            cassette_dir: @cassette_dir,
+            match_requests_on: [:method, :uri],
+            template: [patterns: []]
+          ],
+          fn plug ->
+            Req.get!(
+              "http://localhost:#{bypass.port}/api/search?q=hello&page=1",
+              plug: plug
+            )
+          end
+        )
+
+      assert result1.status == 200
+
+      # Replay with different query string - should still match
+      result2 =
+        with_cassette(
+          "match_on_ignore_query",
+          [
+            cassette_dir: @cassette_dir,
+            match_requests_on: [:method, :uri],
+            template: [patterns: []]
+          ],
+          fn plug ->
+            Req.get!(
+              "http://localhost:#{bypass.port}/api/search?q=goodbye&page=999&extra=param",
+              plug: plug
+            )
+          end
+        )
+
+      assert result2.status == 200
+      assert result2.body["results"] == []
+    end
+
+    @tag capture_log: true
+    test "match_requests_on: [:method, :uri, :body] still requires body match" do
+      bypass = Bypass.open()
+
+      # Record
+      Bypass.expect_once(bypass, "POST", "/api/items", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{"recorded" => true}))
+      end)
+
+      with_cassette(
+        "match_on_with_body",
+        [
+          cassette_dir: @cassette_dir,
+          match_requests_on: [:method, :uri, :body],
+          template: [patterns: []]
+        ],
+        fn plug ->
+          Req.post!(
+            "http://localhost:#{bypass.port}/api/items",
+            json: %{"name" => "Widget"},
+            plug: plug
+          )
+        end
+      )
+
+      # Replay with different body - should NOT match (body is required)
+      # Bypass will be hit again since no match
+      Bypass.expect_once(bypass, "POST", "/api/items", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{"newly_recorded" => true}))
+      end)
+
+      result =
+        with_cassette(
+          "match_on_with_body",
+          [
+            cassette_dir: @cassette_dir,
+            match_requests_on: [:method, :uri, :body],
+            template: [patterns: []]
+          ],
+          fn plug ->
+            Req.post!(
+              "http://localhost:#{bypass.port}/api/items",
+              json: %{"name" => "Different"},
+              plug: plug
+            )
+          end
+        )
+
+      # This should be a newly recorded interaction since body didn't match
+      assert result.body["newly_recorded"] == true
+    end
+  end
 end
