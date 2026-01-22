@@ -91,9 +91,9 @@ defmodule ReqCassette.Session do
   @spec end_shared_session(pid()) :: :ok
   def end_shared_session(agent) when is_pid(agent) do
     Agent.stop(agent, :normal)
-  rescue
+  catch
     # Agent already stopped or process doesn't exist
-    _ -> :ok
+    :exit, _ -> :ok
   end
 
   # ============================================================================
@@ -209,9 +209,25 @@ defmodule ReqCassette.Session do
     end)
 
     %{mode: :shared, ref: agent}
-  rescue
-    # Agent stopped or process doesn't exist
-    _ -> %{mode: :shared, ref: agent}
+  catch
+    :exit, _ ->
+      raise RuntimeError, """
+      ReqCassette shared session Agent is not alive.
+
+      This typically happens when:
+      1. The session was ended prematurely (end_shared_session called too early)
+      2. The Agent process crashed or timed out
+      3. The session pid passed to with_cassette is invalid
+
+      Ensure you're using the session within try/after:
+
+          session = ReqCassette.start_shared_session()
+          try do
+            with_cassette("name", [session: session], fn plug -> ... end)
+          after
+            ReqCassette.end_shared_session(session)
+          end
+      """
   end
 
   defp end_shared_path(cassette_path, agent) do
@@ -228,9 +244,9 @@ defmodule ReqCassette.Session do
     end)
 
     :ok
-  rescue
+  catch
     # Agent stopped or process doesn't exist
-    _ -> :ok
+    :exit, _ -> :ok
   end
 
   defp get_shared_index(cassette_path, agent) do
@@ -240,9 +256,25 @@ defmodule ReqCassette.Session do
         nil -> 0
       end
     end)
-  rescue
-    # Agent stopped or process doesn't exist
-    _ -> 0
+  catch
+    :exit, _ ->
+      raise RuntimeError, """
+      ReqCassette shared session Agent is not alive.
+
+      This typically happens when:
+      1. The session was ended prematurely (end_shared_session called too early)
+      2. The Agent process crashed or timed out
+      3. Running requests from spawned processes without a shared session
+
+      Ensure you're using the session within try/after:
+
+          session = ReqCassette.start_shared_session()
+          try do
+            with_cassette("name", [session: session], fn plug -> ... end)
+          after
+            ReqCassette.end_shared_session(session)
+          end
+      """
   end
 
   defp get_and_advance_shared_index(cassette_path, agent) do
@@ -259,9 +291,25 @@ defmodule ReqCassette.Session do
           {0, new_state}
       end
     end)
-  rescue
-    # Agent stopped or process doesn't exist
-    _ -> 0
+  catch
+    :exit, _ ->
+      raise RuntimeError, """
+      ReqCassette shared session Agent is not alive.
+
+      This typically happens when:
+      1. The session was ended prematurely (end_shared_session called too early)
+      2. The Agent process crashed or timed out
+      3. Running requests from spawned processes without a shared session
+
+      Ensure you're using the session within try/after:
+
+          session = ReqCassette.start_shared_session()
+          try do
+            with_cassette("name", [session: session], fn plug -> ... end)
+          after
+            ReqCassette.end_shared_session(session)
+          end
+      """
   end
 
   defp advance_shared_index(cassette_path, agent) do
@@ -277,9 +325,9 @@ defmodule ReqCassette.Session do
     end)
 
     :ok
-  rescue
-    # Agent stopped or process doesn't exist
-    _ -> :ok
+  catch
+    :exit, _ ->
+      raise RuntimeError, "ReqCassette shared session Agent is not alive."
   end
 
   # ============================================================================
