@@ -938,7 +938,57 @@ end
 
 ## Limitations
 
-### 1. Non-String JSON Values
+### 1. Nested `with_cassette` and Templates
+
+**Templates with sequential matching work within a single `with_cassette`
+scope.**
+
+If you have nested `with_cassette` calls (e.g., a tool/callback that creates its
+own cassette), the inner cassette creates a separate session and won't share
+state with the outer one.
+
+```elixir
+# ❌ Problematic: Nested with_cassette creates separate session
+with_cassette "main_workflow", [template: [preset: :anthropic]], fn plug ->
+  # This works fine
+  response1 = Req.post!("https://api.example.com/llm", plug: plug, json: %{...})
+
+  # But if a tool creates its own cassette...
+  my_tool(response1.body)  # Tool internally calls with_cassette - separate session!
+end
+
+def my_tool(data) do
+  with_cassette "tool_cassette", fn plug ->  # ❌ New session, doesn't share state
+    Req.get!("https://api.example.com/lookup", plug: plug)
+  end
+end
+```
+
+**Solution: Pass the plug through context instead of creating nested
+cassettes.**
+
+```elixir
+# ✅ Correct: Pass plug through to functions that need HTTP access
+with_cassette "main_workflow", [template: [preset: :anthropic]], fn plug ->
+  response1 = Req.post!("https://api.example.com/llm", plug: plug, json: %{...})
+
+  # Pass plug (or req_opts) to the tool
+  my_tool(response1.body, req_opts: [plug: plug])
+end
+
+def my_tool(data, opts \\ []) do
+  # Use the passed plug instead of creating a new cassette
+  Req.get!("https://api.example.com/lookup", opts[:req_opts] || [])
+end
+```
+
+This pattern is especially important for:
+
+- **LLM tool callbacks** that need to make HTTP calls
+- **Helper functions** called during a test
+- **Multi-step workflows** where each step might make requests
+
+### 2. Non-String JSON Values
 
 Numbers, booleans, and null are **not templated**:
 

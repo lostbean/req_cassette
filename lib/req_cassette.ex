@@ -38,8 +38,8 @@ defmodule ReqCassette do
 
   > **⚠️ Migration guides for breaking changes:**
   >
-  > - [v0.4 → v0.5](https://hexdocs.pm/req_cassette/migration_v0.4_to_v0.5.html) - Cross-process session support
-  > - [v0.1 → v0.2](https://hexdocs.pm/req_cassette/migration_v0.1_to_v0.2.html) - API changes from v0.1
+  > - [v0.4 → v0.5](MIGRATION_V0.4_TO_V0.5.html) - Cross-process session support
+  > - [v0.1 → v0.2](MIGRATION_V0.1_TO_V0.2.html) - API changes from v0.1
 
   ## Installation
 
@@ -265,7 +265,31 @@ defmodule ReqCassette do
   **Not needed for:**
   - All requests from the same process (the common case)
 
+  ### Convenience Options
+
+  For simpler code, use `shared: true` or `with_shared_cassette/3`:
+
+      # Option 1: shared: true shorthand
+      with_cassette "parallel_test", [shared: true], fn plug ->
+        tasks = for i <- 1..3 do
+          Task.async(fn -> Req.get!("https://api.example.com/\#{i}", plug: plug) end)
+        end
+        Task.await_many(tasks)
+      end
+
+      # Option 2: with_shared_cassette helper
+      with_shared_cassette "parallel_test", fn plug ->
+        tasks = for i <- 1..3 do
+          Task.async(fn -> Req.get!("https://api.example.com/\#{i}", plug: plug) end)
+        end
+        Task.await_many(tasks)
+      end
+
+  Both automatically manage the session lifecycle (start/end) for you.
+
   ### Best Practice: ExUnit Setup
+
+  For multiple tests needing shared sessions, use ExUnit's setup:
 
       defmodule MyApp.ParallelAPITest do
         use ExUnit.Case, async: true
@@ -518,6 +542,8 @@ defmodule ReqCassette do
     - `:allow_key_templates` - Allow JSON key templating (default: false)
   - `:sequential` - Enable sequential matching (default: `false`, automatically enabled with `:template`)
   - `:session` - Shared session reference for cross-process sequential matching (see below)
+  - `:shared` - Shorthand for cross-process support (default: `false`). When `true`, automatically
+    creates and manages a shared session. Equivalent to using `with_shared_cassette/3`.
 
   ## Matching Behavior
 
@@ -694,8 +720,97 @@ defmodule ReqCassette do
   @spec end_shared_session(pid()) :: :ok
   defdelegate end_shared_session(session), to: ReqCassette.Session
 
+  @doc """
+  Execute code with a cassette using a shared session for cross-process support.
+
+  This is a convenience wrapper that handles the try/after boilerplate for shared
+  sessions. Use this when your tests spawn processes that make HTTP requests
+  (Task.async, GenServer, etc.).
+
+  Equivalent to:
+
+      session = ReqCassette.start_shared_session()
+      try do
+        with_cassette(name, Keyword.put(opts, :session, session), fun)
+      after
+        ReqCassette.end_shared_session(session)
+      end
+
+  ## Parameters
+
+  - `name` - Human-readable cassette name
+  - `opts` - Keyword list of options (same as `with_cassette/3`, but `:session` is auto-managed)
+  - `fun` - Function that takes the plug and returns a result
+
+  ## Example
+
+      # Before (verbose):
+      session = ReqCassette.start_shared_session()
+      try do
+        with_cassette "parallel_api", [session: session, template: [preset: :common]], fn plug ->
+          tasks = for i <- 1..3 do
+            Task.async(fn -> Req.get!("https://api.example.com/\#{i}", plug: plug) end)
+          end
+          Task.await_many(tasks)
+        end
+      after
+        ReqCassette.end_shared_session(session)
+      end
+
+      # After (clean):
+      with_shared_cassette "parallel_api", [template: [preset: :common]], fn plug ->
+        tasks = for i <- 1..3 do
+          Task.async(fn -> Req.get!("https://api.example.com/\#{i}", plug: plug) end)
+        end
+        Task.await_many(tasks)
+      end
+
+  ## When to Use
+
+  Use `with_shared_cassette` when:
+  - Using `Task.async/1` or `Task.async_stream/3`
+  - Making requests from a GenServer
+  - Using `spawn/1` or `spawn_link/1`
+  - Any HTTP request from a different process
+
+  For single-process tests, regular `with_cassette/3` is sufficient.
+  """
+  @spec with_shared_cassette(String.t(), keyword(), (plug :: term() -> result)) :: result
+        when result: any()
+  @spec with_shared_cassette(String.t(), (plug :: term() -> result)) :: result
+        when result: any()
+
+  def with_shared_cassette(name, fun) when is_function(fun, 1) do
+    with_shared_cassette(name, [], fun)
+  end
+
+  def with_shared_cassette(name, opts, fun) when is_function(fun, 1) do
+    session = start_shared_session()
+
+    try do
+      with_cassette(name, Keyword.put(opts, :session, session), fun)
+    after
+      end_shared_session(session)
+    end
+  end
+
   # 3-arity: with_cassette(name, opts, fun)
   def with_cassette(name, opts, fun) when is_function(fun, 1) do
+    # Handle `shared: true` shorthand - delegates to with_shared_cassette
+    if opts[:shared] == true do
+      opts_without_shared = Keyword.delete(opts, :shared)
+      with_shared_cassette(name, opts_without_shared, fun)
+    else
+      do_with_cassette(name, opts, fun)
+    end
+  end
+
+  # Handle case where opts is omitted: with_cassette("name", fn plug -> ... end)
+  def with_cassette(name, fun, []) when is_function(fun, 1) do
+    with_cassette(name, [], fun)
+  end
+
+  defp do_with_cassette(name, opts, fun) do
     alias ReqCassette.{Cassette, Session}
 
     # Validate and process template options if present
@@ -754,11 +869,6 @@ defmodule ReqCassette do
         Session.end_session(cassette_path, session_id)
       end
     end
-  end
-
-  def with_cassette(name, fun, []) when is_function(fun, 1) do
-    # Handle case where opts is omitted: with_cassette("name", fn plug -> ... end)
-    with_cassette(name, [], fun)
   end
 
   # Private helpers

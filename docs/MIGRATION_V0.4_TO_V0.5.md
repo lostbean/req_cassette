@@ -126,6 +126,41 @@ with_cassette "test", [session: session, sequential: true], fn plug ->
 end
 ```
 
+### New Option: `:shared`
+
+Shorthand for cross-process support that auto-manages the session lifecycle:
+
+```elixir
+# Equivalent to manually managing start_shared_session/end_shared_session
+with_cassette "test", [shared: true], fn plug ->
+  tasks = for i <- 1..3 do
+    Task.async(fn -> Req.get!("https://api.example.com/#{i}", plug: plug) end)
+  end
+  Task.await_many(tasks)
+end
+```
+
+### `ReqCassette.with_shared_cassette/2,3`
+
+Convenience wrapper that handles the try/after boilerplate for shared sessions:
+
+```elixir
+# Instead of:
+session = ReqCassette.start_shared_session()
+try do
+  with_cassette "test", [session: session, template: [preset: :common]], fn plug ->
+    # ...
+  end
+after
+  ReqCassette.end_shared_session(session)
+end
+
+# You can write:
+with_shared_cassette "test", [template: [preset: :common]], fn plug ->
+  # ...
+end
+```
+
 ## Migration Steps
 
 ### Step 1: Most Tests Need No Changes
@@ -213,6 +248,51 @@ defmodule MyApp.ParallelAPITest do
   end
 end
 ```
+
+### Step 5: GenServer Testing Pattern
+
+If your code uses GenServers that make HTTP calls, pass the plug through the
+GenServer's initialization or function arguments:
+
+```elixir
+defmodule MyApp.APIWorker do
+  use GenServer
+
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts)
+  end
+
+  def fetch_data(pid) do
+    GenServer.call(pid, :fetch_data)
+  end
+
+  @impl true
+  def init(opts) do
+    {:ok, %{req_opts: opts[:req_opts] || []}}
+  end
+
+  @impl true
+  def handle_call(:fetch_data, _from, state) do
+    response = Req.get!("https://api.example.com/data", state.req_opts)
+    {:reply, response.body, state}
+  end
+end
+
+# Test with shared session
+test "genserver makes API calls", %{session: session} do
+  with_cassette "genserver_test", [session: session], fn plug ->
+    # Start GenServer with the plug in req_opts
+    {:ok, pid} = MyApp.APIWorker.start_link(req_opts: [plug: plug])
+
+    # GenServer's HTTP calls will use the shared session
+    result = MyApp.APIWorker.fetch_data(pid)
+    assert result["status"] == "ok"
+  end
+end
+```
+
+**Key insight:** The GenServer runs in a separate process, so shared sessions
+are required for sequential matching to work correctly across processes.
 
 ## When to Use Each Feature
 

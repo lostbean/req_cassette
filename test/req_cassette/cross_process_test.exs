@@ -651,4 +651,177 @@ defmodule ReqCassette.CrossProcessTest do
       end
     end
   end
+
+  describe "convenience wrappers" do
+    test "with_shared_cassette/3 manages session lifecycle automatically" do
+      bypass = Bypass.open()
+
+      request_count = :counters.new(1, [:atomics])
+
+      Bypass.expect(bypass, "POST", "/api", fn conn ->
+        :counters.add(request_count, 1, 1)
+        current = :counters.get(request_count, 1)
+
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{request_number: current}))
+      end)
+
+      # Record using with_shared_cassette - no manual session management needed
+      # Record sequentially from parent, then replay with spawned tasks
+      with_shared_cassette(
+        "with_shared_cassette_test",
+        [cassette_dir: @cassette_dir, mode: :record, template: [preset: :common]],
+        fn plug ->
+          # Record 3 sequential requests from parent
+          r1 =
+            Req.post!("http://localhost:#{bypass.port}/api",
+              plug: plug,
+              json: %{action: "query"}
+            )
+
+          r2 =
+            Req.post!("http://localhost:#{bypass.port}/api",
+              plug: plug,
+              json: %{action: "query"}
+            )
+
+          r3 =
+            Req.post!("http://localhost:#{bypass.port}/api",
+              plug: plug,
+              json: %{action: "query"}
+            )
+
+          assert r1.body["request_number"] == 1
+          assert r2.body["request_number"] == 2
+          assert r3.body["request_number"] == 3
+        end
+      )
+
+      # Verify cassette has 3 interactions
+      cassette_path = Path.join(@cassette_dir, "with_shared_cassette_test.json")
+      {:ok, cassette} = Cassette.load(cassette_path)
+      assert length(cassette["interactions"]) == 3
+
+      Bypass.down(bypass)
+
+      # Replay using with_shared_cassette from spawned tasks
+      with_shared_cassette(
+        "with_shared_cassette_test",
+        [cassette_dir: @cassette_dir, mode: :replay, template: [preset: :common]],
+        fn plug ->
+          tasks =
+            for _i <- 1..3 do
+              Task.async(fn ->
+                Req.post!("http://localhost:#{bypass.port}/api",
+                  plug: plug,
+                  json: %{action: "query"}
+                )
+              end)
+            end
+
+          results = Task.await_many(tasks)
+          numbers = Enum.map(results, & &1.body["request_number"]) |> Enum.sort()
+          assert numbers == [1, 2, 3], "Should replay 3 sequential interactions"
+        end
+      )
+    end
+
+    test "with_shared_cassette/2 works with default options" do
+      bypass = Bypass.open()
+
+      Bypass.expect(bypass, "GET", "/simple", fn conn ->
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{ok: true}))
+      end)
+
+      # 2-arity version with just name and function
+      with_shared_cassette("with_shared_cassette_2arity", fn plug ->
+        task =
+          Task.async(fn ->
+            Req.get!("http://localhost:#{bypass.port}/simple", plug: plug)
+          end)
+
+        result = Task.await(task)
+        assert result.body["ok"] == true
+      end)
+
+      # Clean up test cassette
+      File.rm("test/cassettes/with_shared_cassette_2arity.json")
+    end
+
+    test "shared: true option works as shorthand for with_shared_cassette" do
+      bypass = Bypass.open()
+
+      request_count = :counters.new(1, [:atomics])
+
+      Bypass.expect(bypass, "POST", "/api", fn conn ->
+        :counters.add(request_count, 1, 1)
+        current = :counters.get(request_count, 1)
+
+        conn
+        |> Conn.put_resp_content_type("application/json")
+        |> Conn.resp(200, Jason.encode!(%{request_number: current}))
+      end)
+
+      # Record sequentially from parent using shared: true
+      with_cassette(
+        "shared_true_test",
+        [cassette_dir: @cassette_dir, mode: :record, shared: true, template: [preset: :common]],
+        fn plug ->
+          # Record 3 sequential requests from parent
+          r1 =
+            Req.post!("http://localhost:#{bypass.port}/api",
+              plug: plug,
+              json: %{action: "query"}
+            )
+
+          r2 =
+            Req.post!("http://localhost:#{bypass.port}/api",
+              plug: plug,
+              json: %{action: "query"}
+            )
+
+          r3 =
+            Req.post!("http://localhost:#{bypass.port}/api",
+              plug: plug,
+              json: %{action: "query"}
+            )
+
+          assert r1.body["request_number"] == 1
+          assert r2.body["request_number"] == 2
+          assert r3.body["request_number"] == 3
+        end
+      )
+
+      # Verify cassette has 3 interactions
+      cassette_path = Path.join(@cassette_dir, "shared_true_test.json")
+      {:ok, cassette} = Cassette.load(cassette_path)
+      assert length(cassette["interactions"]) == 3
+
+      Bypass.down(bypass)
+
+      # Replay using shared: true from spawned tasks
+      with_cassette(
+        "shared_true_test",
+        [cassette_dir: @cassette_dir, mode: :replay, shared: true, template: [preset: :common]],
+        fn plug ->
+          tasks =
+            for _i <- 1..3 do
+              Task.async(fn ->
+                Req.post!("http://localhost:#{bypass.port}/api",
+                  plug: plug,
+                  json: %{action: "query"}
+                )
+              end)
+            end
+
+          results = Task.await_many(tasks)
+          numbers = Enum.map(results, & &1.body["request_number"]) |> Enum.sort()
+          assert numbers == [1, 2, 3], "Should replay 3 sequential interactions with shared: true"
+        end
+      )
+    end
+  end
 end
