@@ -436,7 +436,8 @@ with_cassette "example",
     before_record: fn interaction ->              # Custom filtering callback
       # Modify interaction before saving
       interaction
-    end
+    end,
+    req_options: [receive_timeout: 120_000]      # Forward options to outbound Req request
   ],
   fn plug ->
     # Your code here

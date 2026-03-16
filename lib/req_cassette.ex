@@ -544,6 +544,11 @@ defmodule ReqCassette do
   - `:session` - Shared session reference for cross-process sequential matching (see below)
   - `:shared` - Shorthand for cross-process support (default: `false`). When `true`, automatically
     creates and manages a shared session. Equivalent to using `with_shared_cassette/3`.
+  - `:req_options` - Keyword list of options to forward to the outbound Req request when recording
+    or in bypass mode. Useful for setting timeouts for slow APIs. Supported options include
+    `:receive_timeout`, `:pool_timeout`, `:connect_options`, and any other Req option except
+    `:plug` and `:adapter` (which are stripped to prevent infinite recursion).
+    Example: `req_options: [receive_timeout: 120_000]`
 
   ## Matching Behavior
 
@@ -844,20 +849,7 @@ defmodule ReqCassette do
         nil
       end
 
-    plug_opts = %{
-      cassette_name: name,
-      cassette_dir: cassette_dir,
-      mode: opts[:mode] || :record,
-      match_requests_on: opts[:match_requests_on] || [:method, :uri, :query, :headers, :body],
-      filter_sensitive_data: opts[:filter_sensitive_data] || [],
-      filter_request_headers: opts[:filter_request_headers] || [],
-      filter_response_headers: opts[:filter_response_headers] || [],
-      filter_request: opts[:filter_request],
-      filter_response: opts[:filter_response],
-      before_record: opts[:before_record],
-      template: template_opts,
-      session_id: session_id
-    }
+    plug_opts = build_plug_opts(name, cassette_dir, opts, template_opts, session_id)
 
     plug = {ReqCassette.Plug, plug_opts}
 
@@ -872,6 +864,24 @@ defmodule ReqCassette do
   end
 
   # Private helpers
+
+  defp build_plug_opts(name, cassette_dir, opts, template_opts, session_id) do
+    %{
+      cassette_name: name,
+      cassette_dir: cassette_dir,
+      mode: opts[:mode] || :record,
+      match_requests_on: opts[:match_requests_on] || [:method, :uri, :query, :headers, :body],
+      filter_sensitive_data: opts[:filter_sensitive_data] || [],
+      filter_request_headers: opts[:filter_request_headers] || [],
+      filter_response_headers: opts[:filter_response_headers] || [],
+      filter_request: opts[:filter_request],
+      filter_response: opts[:filter_response],
+      before_record: opts[:before_record],
+      template: template_opts,
+      session_id: session_id,
+      req_options: opts[:req_options] || []
+    }
+  end
 
   defp validate_and_process_template_opts(template_opts) when is_list(template_opts) do
     preset_patterns = resolve_preset_patterns(template_opts[:preset])

@@ -372,7 +372,28 @@ template: [preset: :anthropic, debug: true]
 # Logs extraction and matching details
 ```
 
-### 6. Consider Test Organization
+### 6. Set Timeouts for Slow LLM Responses
+
+LLM APIs can take 20-60+ seconds for large prompts (especially with tool calling).
+By default, the outbound request during recording uses Req's 15-second timeout.
+Use `req_options` to increase it:
+
+```elixir
+# Increase timeout for slow LLM responses
+with_cassette "large_prompt",
+  [
+    filter_request_headers: ["authorization"],
+    template: [preset: :anthropic],
+    req_options: [receive_timeout: 120_000]  # 2 minutes
+  ],
+  fn plug ->
+    ReqLLM.generate_text("anthropic:claude-sonnet-4-20250514", large_prompt,
+      req_http_options: [plug: plug]
+    )
+  end
+```
+
+### 7. Consider Test Organization
 
 ```elixir
 # test/support/cassette_case.ex
@@ -389,7 +410,8 @@ defmodule MyApp.CassetteCase do
         [
           cassette_dir: @cassette_dir,
           filter_request_headers: ["authorization", "x-api-key"],
-          template: [preset: :llm]
+          template: [preset: :llm],
+          req_options: [receive_timeout: 120_000]
         ] ++ extra_opts
       end
     end
@@ -400,6 +422,20 @@ end
 ---
 
 ## Troubleshooting
+
+### "Network request failed" / timeout during recording
+
+**Cause:** LLM responses take longer than Req's default 15-second `receive_timeout`.
+This is common with large prompts, tool-calling workflows, or complex multi-schema inputs.
+
+**Solution:**
+```elixir
+with_cassette "slow_api",
+  [req_options: [receive_timeout: 120_000]],
+  fn plug ->
+    # ...
+  end
+```
 
 ### "No matching interaction found"
 

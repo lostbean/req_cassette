@@ -55,6 +55,8 @@ defmodule ReqCassette.Plug do
   - `:filter_request_headers` - List of request header names to remove (case-insensitive)
   - `:filter_response_headers` - List of response header names to remove (case-insensitive)
   - `:before_record` - Callback function for custom filtering (receives and returns interaction map)
+  - `:req_options` - Keyword list of options forwarded to the outbound Req request during recording
+    or bypass mode (e.g., `[receive_timeout: 120_000]`). `:plug` and `:adapter` are stripped.
 
   ## Recording Modes
 
@@ -806,7 +808,7 @@ defmodule ReqCassette.Plug do
     end
   end
 
-  defp forward_and_capture(conn, body, _opts) do
+  defp forward_and_capture(conn, body, opts) do
     # Convert Plug.Conn to a Req request and run it
     method = conn.method |> String.downcase() |> String.to_atom()
     headers = conn.req_headers
@@ -837,8 +839,15 @@ defmodule ReqCassette.Plug do
         req_opts
       end
 
+    # Forward user-specified req_options (e.g., receive_timeout, pool_timeout, connect_options)
+    # but never forward :plug to avoid infinite recursion
+    forwarded_opts =
+      opts
+      |> Map.get(:req_options, [])
+      |> Keyword.drop([:plug, :adapter])
+
     # Create a new Req without the plug option to avoid infinite recursion
-    req = Req.new(adapter: &Steps.run_finch/1)
+    req = Req.new([adapter: &Steps.run_finch/1] ++ forwarded_opts)
 
     resp = Req.request(req, req_opts)
     {conn, resp}

@@ -381,6 +381,22 @@ Req.get(url,
 )
 ```
 
+### Timeout Options
+
+LLM APIs often take longer than Req's default 15-second timeout. Use `req_options`
+to forward timeout settings to the outbound request during recording:
+
+```elixir
+with_cassette "slow_llm_call",
+  [
+    filter_request_headers: ["authorization", "x-api-key", "cookie"],
+    req_options: [receive_timeout: 120_000]  # 2 minutes for large prompts
+  ],
+  fn plug ->
+    ReqLLM.generate_text(model, large_prompt, req_http_options: [plug: plug])
+  end
+```
+
 ### Modes
 
 **Available modes:**
@@ -501,6 +517,25 @@ Use regular `generate_text/3` for cassette support. The livebook includes both:
 - `MyAgentWithCassettes` - Non-streaming version (with cassettes)
 
 ## Troubleshooting
+
+### Timeout errors during cassette recording
+
+**Cause**: LLM API calls can take 20-60+ seconds (especially with large prompts or
+tool calling), but the outbound request during recording uses Req's default
+15-second `receive_timeout`.
+
+**Fix**: Pass `req_options` to increase the timeout:
+
+```elixir
+with_cassette "slow_api",
+  [
+    filter_request_headers: ["authorization"],
+    req_options: [receive_timeout: 120_000]
+  ],
+  fn plug ->
+    ReqLLM.generate_text(model, prompt, req_http_options: [plug: plug])
+  end
+```
 
 ### "FunctionClauseError: no function clause matching in Access.get/3"
 
