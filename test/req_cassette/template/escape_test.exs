@@ -316,13 +316,17 @@ defmodule ReqCassette.Template.EscapeTest do
 
     test "handles nil input gracefully" do
       # The escape function expects binary strings, not nil
-      # This test verifies the type constraint
+      # This test verifies the type constraint. The nil is routed through a
+      # variable so the compile-time type checker doesn't flag the deliberate
+      # contract violation.
+      not_a_binary = Enum.random([nil])
+
       assert_raise FunctionClauseError, fn ->
-        Escape.escape(nil)
+        Escape.escape(not_a_binary)
       end
 
       assert_raise FunctionClauseError, fn ->
-        Escape.unescape(nil)
+        Escape.unescape(not_a_binary)
       end
     end
 
