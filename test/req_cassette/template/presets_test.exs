@@ -21,9 +21,9 @@ defmodule ReqCassette.Template.PresetsTest do
       assert :anthropic_request_id in pattern_names
 
       # Verify patterns are regexes
-      assert Regex.regex?(patterns[:msg_id])
-      assert Regex.regex?(patterns[:toolu_id])
-      assert Regex.regex?(patterns[:anthropic_request_id])
+      assert is_struct(patterns[:msg_id], Regex)
+      assert is_struct(patterns[:toolu_id], Regex)
+      assert is_struct(patterns[:anthropic_request_id], Regex)
 
       # Verify patterns match expected format
       assert Regex.match?(patterns[:msg_id], "msg_01XzW7o3s58J6KauMpLBFtEf")
@@ -42,8 +42,8 @@ defmodule ReqCassette.Template.PresetsTest do
       assert :call_id in pattern_names
 
       # Verify patterns are regexes
-      assert Regex.regex?(patterns[:chatcmpl_id])
-      assert Regex.regex?(patterns[:call_id])
+      assert is_struct(patterns[:chatcmpl_id], Regex)
+      assert is_struct(patterns[:call_id], Regex)
 
       # Verify patterns match expected format
       assert Regex.match?(patterns[:chatcmpl_id], "chatcmpl-abc123def456xyz789")
@@ -61,8 +61,8 @@ defmodule ReqCassette.Template.PresetsTest do
       assert :iso_timestamp in pattern_names
 
       # Verify patterns are regexes
-      assert Regex.regex?(patterns[:uuid])
-      assert Regex.regex?(patterns[:iso_timestamp])
+      assert is_struct(patterns[:uuid], Regex)
+      assert is_struct(patterns[:iso_timestamp], Regex)
 
       # Verify UUID pattern matches v4 UUIDs (case insensitive)
       assert Regex.match?(patterns[:uuid], "550e8400-e29b-41d4-a716-446655440000")
@@ -107,15 +107,19 @@ defmodule ReqCassette.Template.PresetsTest do
     end
 
     test "raises ArgumentError for unknown preset" do
+      unknown = String.to_atom("nonexistent")
+
       assert_raise ArgumentError, ~r/Unknown template preset: :nonexistent/, fn ->
-        Presets.get!(:nonexistent)
+        Presets.get!(unknown)
       end
     end
 
     test "error message includes available presets" do
+      unknown = String.to_atom("bad_preset")
+
       error =
         assert_raise ArgumentError, fn ->
-          Presets.get!(:bad_preset)
+          Presets.get!(unknown)
         end
 
       assert error.message =~ "Available presets:"
