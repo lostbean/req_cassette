@@ -846,7 +846,14 @@ defmodule ReqCassette.Plug do
       |> Map.get(:req_options, [])
       |> Keyword.drop([:plug, :adapter])
 
-    # Create a new Req without the plug option to avoid infinite recursion
+    # Create a new Req without the plug option to avoid infinite recursion.
+    #
+    # Req.Steps.run_finch/1 is Req internals, not public API, so it is the
+    # single point the req version range in mix.exs rests on. A Req release
+    # that renames or reshapes it breaks recording here
+    # without any deprecation warning; the compatibility matrix in
+    # .github/workflows/ci.yml is what catches that, so widening the range
+    # means adding a row there rather than just editing the constraint.
     req = Req.new([adapter: &Steps.run_finch/1] ++ forwarded_opts)
 
     resp = Req.request(req, req_opts)
