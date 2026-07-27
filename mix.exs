@@ -5,7 +5,7 @@ defmodule ReqCassette.MixProject do
     [
       app: :req_cassette,
       version: "0.6.1",
-      elixir: "~> 1.20",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
@@ -32,7 +32,7 @@ defmodule ReqCassette.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:req, "~> 0.5.15"},
+      {:req, "~> 0.5.15 or ~> 0.6"},
       {:plug, "~> 1.18"},
       {:jason, "~> 1.4"},
       {:req_llm, "~> 1.0.0-rc.7", only: [:dev, :test], runtime: false},

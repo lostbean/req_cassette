@@ -52,21 +52,30 @@ defmodule ReqCassette.Template.Presets do
   | `iso_timestamp` | ISO 8601 datetime | `2025-01-15T10:30:00Z` |
   """
 
-  @anthropic_patterns [
-    msg_id: ~r/msg_[a-zA-Z0-9]+/,
-    toolu_id: ~r/toolu_[a-zA-Z0-9]+/,
-    anthropic_request_id: ~r/req_[a-zA-Z0-9]+/
-  ]
+  # These live in function bodies rather than module attributes: on
+  # Elixir 1.18/OTP 28 a Regex held in a module attribute cannot be
+  # escaped into a function body at compile time.
+  defp anthropic_patterns do
+    [
+      msg_id: ~r/msg_[a-zA-Z0-9]+/,
+      toolu_id: ~r/toolu_[a-zA-Z0-9]+/,
+      anthropic_request_id: ~r/req_[a-zA-Z0-9]+/
+    ]
+  end
 
-  @openai_patterns [
-    chatcmpl_id: ~r/chatcmpl-[a-zA-Z0-9]+/,
-    call_id: ~r/call_[a-zA-Z0-9]+/
-  ]
+  defp openai_patterns do
+    [
+      chatcmpl_id: ~r/chatcmpl-[a-zA-Z0-9]+/,
+      call_id: ~r/call_[a-zA-Z0-9]+/
+    ]
+  end
 
-  @common_patterns [
-    uuid: ~r/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
-    iso_timestamp: ~r/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?/
-  ]
+  defp common_patterns do
+    [
+      uuid: ~r/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+      iso_timestamp: ~r/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?/
+    ]
+  end
 
   @doc """
   Returns patterns for the given preset name.
@@ -90,10 +99,10 @@ defmodule ReqCassette.Template.Presets do
       {:error, {:unknown_preset, :unknown}}
   """
   @spec get(atom()) :: {:ok, keyword(Regex.t())} | {:error, {:unknown_preset, atom()}}
-  def get(:anthropic), do: {:ok, @anthropic_patterns}
-  def get(:openai), do: {:ok, @openai_patterns}
-  def get(:common), do: {:ok, @common_patterns}
-  def get(:llm), do: {:ok, @anthropic_patterns ++ @openai_patterns}
+  def get(:anthropic), do: {:ok, anthropic_patterns()}
+  def get(:openai), do: {:ok, openai_patterns()}
+  def get(:common), do: {:ok, common_patterns()}
+  def get(:llm), do: {:ok, anthropic_patterns() ++ openai_patterns()}
   def get(name), do: {:error, {:unknown_preset, name}}
 
   @doc """
