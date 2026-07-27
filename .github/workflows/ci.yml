@@ -46,3 +46,52 @@ jobs:
         run: nix develop -c mix format --check-formatted
       - name: Run Credo
         run: nix develop -c mix credo
+
+  compatibility:
+    # Proves the version ranges declared in mix.exs actually hold: the
+    # oldest and newest supported Elixir, each against the oldest and
+    # newest req allowed by "~> 0.5.15 or ~> 0.6". Deps are resolved
+    # unlocked so mix.lock cannot mask a range that does not work.
+    name: Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }} / req ${{ matrix.req }}
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Floor of the supported Elixir range.
+          - elixir: "1.18.4"
+            otp: "27.3"
+            req: "0.5.15"
+          - elixir: "1.18.4"
+            otp: "27.3"
+            req: "0.6.3"
+          # Elixir 1.18 on OTP 28 is where the module-attribute regex
+          # compile error surfaced, so it gets its own entry.
+          - elixir: "1.18.4"
+            otp: "28.0"
+            req: "0.6.3"
+          # Current toolchain, matching the Nix dev shell.
+          - elixir: "1.20.1"
+            otp: "28.0"
+            req: "0.5.15"
+          - elixir: "1.20.1"
+            otp: "28.0"
+            req: "0.6.3"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+      - name: Pin req to ${{ matrix.req }}
+        # Resolves without mix.lock so the range declared in mix.exs is
+        # what actually gets exercised, and asserts the pin took effect.
+        run: .github/workflows/pin-req.sh '${{ matrix.req }}'
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+      - name: Run tests
+        run: mix test
