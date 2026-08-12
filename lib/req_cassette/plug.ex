@@ -870,7 +870,9 @@ defmodule ReqCassette.Plug do
   defp default_adapter do
     case Code.ensure_loaded?(Req.Finch) do
       true -> Req.Finch
-      false -> &Steps.run_finch/1
+      # Req < 0.7. Captured indirectly: naming it directly warns on every
+      # build against 0.7, where the function this branch exists for is gone.
+      false -> Function.capture(Steps, :run_finch, 1)
     end
   end
 
