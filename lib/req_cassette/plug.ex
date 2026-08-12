@@ -504,14 +504,28 @@ defmodule ReqCassette.Plug do
     filter_opts = extract_filter_opts(opts)
     filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
 
-    case find_matching_interaction_record(cassette, filtered_request, match_on, path, opts) do
-      {:ok, response} ->
-        send_cached_response(conn, response)
-
-      :not_found ->
+    cond do
+      # Sequential replay is strictly positional: interaction N answers request
+      # N. Answering a repeat from the file while recording means the repeat is
+      # never appended, so a request made three times is stored once — and the
+      # replay that follows runs out on the second, reporting no matching
+      # interaction for a request the cassette visibly contains.
+      #
+      # Under `sequential` the only coherent recording is one interaction per
+      # request actually made, so record every one. Non-sequential cassettes
+      # keep the old behaviour, where collapsing repeats is what you want.
+      sequential?(opts) ->
         record_new_interaction(conn, body, opts, cassette, filtered_request, path)
+
+      true ->
+        case find_matching_interaction_record(cassette, filtered_request, match_on, path, opts) do
+          {:ok, response} -> send_cached_response(conn, response)
+          :not_found -> record_new_interaction(conn, body, opts, cassette, filtered_request, path)
+        end
     end
   end
+
+  defp sequential?(opts), do: opts[:sequential] == true or opts[:session_id] != nil
 
   defp handle_record_new_cassette(conn, body, opts, path) do
     filter_opts = extract_filter_opts(opts)
@@ -848,16 +862,32 @@ defmodule ReqCassette.Plug do
 
     # Create a new Req without the plug option to avoid infinite recursion.
     #
-    # Req.Steps.run_finch/1 is Req internals, not public API, so it is the
-    # single point the req version range in mix.exs rests on. A Req release
-    # that renames or reshapes it breaks recording here
-    # without any deprecation warning; the compatibility matrix in
-    # .github/workflows/ci.yml is what catches that, so widening the range
-    # means adding a row there rather than just editing the constraint.
-    req = Req.new([adapter: &Steps.run_finch/1] ++ forwarded_opts)
+    # The default adapter is Req internals, not public API, so it is the single
+    # point the req version range in mix.exs rests on. A Req release that
+    # renames or reshapes it breaks recording here without any deprecation
+    # warning; the compatibility matrix in .github/workflows/ci.yml is what
+    # catches that, so widening the range means adding a row there rather than
+    # just editing the constraint.
+    #
+    # It changed exactly that way in 0.7: `Req.Steps.run_finch/1` became the
+    # `Req.Finch` adapter module. Because the capture only raises when a
+    # recording is actually made, replay went on working and the breakage was
+    # invisible until someone recorded a new cassette.
+    req = Req.new([adapter: default_adapter()] ++ forwarded_opts)
 
     resp = Req.request(req, req_opts)
     {conn, resp}
+  end
+
+  # Resolved at runtime rather than compile time so one build works against
+  # either Req line — the supported range spans the rename.
+  defp default_adapter do
+    case Code.ensure_loaded?(Req.Finch) do
+      true -> Req.Finch
+      # Req < 0.7. Captured indirectly: naming it directly warns on every
+      # build against 0.7, where the function this branch exists for is gone.
+      false -> Function.capture(Steps, :run_finch, 1)
+    end
   end
 
   defp resp_to_conn(conn, %{status: status, headers: headers, body: body}) do
