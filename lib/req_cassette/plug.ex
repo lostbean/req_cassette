@@ -504,14 +504,28 @@ defmodule ReqCassette.Plug do
     filter_opts = extract_filter_opts(opts)
     filtered_request = build_and_filter_incoming_request(conn, body, filter_opts)
 
-    case find_matching_interaction_record(cassette, filtered_request, match_on, path, opts) do
-      {:ok, response} ->
-        send_cached_response(conn, response)
-
-      :not_found ->
+    cond do
+      # Sequential replay is strictly positional: interaction N answers request
+      # N. Answering a repeat from the file while recording means the repeat is
+      # never appended, so a request made three times is stored once — and the
+      # replay that follows runs out on the second, reporting no matching
+      # interaction for a request the cassette visibly contains.
+      #
+      # Under `sequential` the only coherent recording is one interaction per
+      # request actually made, so record every one. Non-sequential cassettes
+      # keep the old behaviour, where collapsing repeats is what you want.
+      sequential?(opts) ->
         record_new_interaction(conn, body, opts, cassette, filtered_request, path)
+
+      true ->
+        case find_matching_interaction_record(cassette, filtered_request, match_on, path, opts) do
+          {:ok, response} -> send_cached_response(conn, response)
+          :not_found -> record_new_interaction(conn, body, opts, cassette, filtered_request, path)
+        end
     end
   end
+
+  defp sequential?(opts), do: opts[:sequential] == true or opts[:session_id] != nil
 
   defp handle_record_new_cassette(conn, body, opts, path) do
     filter_opts = extract_filter_opts(opts)
