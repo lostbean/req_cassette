@@ -848,16 +848,30 @@ defmodule ReqCassette.Plug do
 
     # Create a new Req without the plug option to avoid infinite recursion.
     #
-    # Req.Steps.run_finch/1 is Req internals, not public API, so it is the
-    # single point the req version range in mix.exs rests on. A Req release
-    # that renames or reshapes it breaks recording here
-    # without any deprecation warning; the compatibility matrix in
-    # .github/workflows/ci.yml is what catches that, so widening the range
-    # means adding a row there rather than just editing the constraint.
-    req = Req.new([adapter: &Steps.run_finch/1] ++ forwarded_opts)
+    # The default adapter is Req internals, not public API, so it is the single
+    # point the req version range in mix.exs rests on. A Req release that
+    # renames or reshapes it breaks recording here without any deprecation
+    # warning; the compatibility matrix in .github/workflows/ci.yml is what
+    # catches that, so widening the range means adding a row there rather than
+    # just editing the constraint.
+    #
+    # It changed exactly that way in 0.7: `Req.Steps.run_finch/1` became the
+    # `Req.Finch` adapter module. Because the capture only raises when a
+    # recording is actually made, replay went on working and the breakage was
+    # invisible until someone recorded a new cassette.
+    req = Req.new([adapter: default_adapter()] ++ forwarded_opts)
 
     resp = Req.request(req, req_opts)
     {conn, resp}
+  end
+
+  # Resolved at runtime rather than compile time so one build works against
+  # either Req line — the supported range spans the rename.
+  defp default_adapter do
+    case Code.ensure_loaded?(Req.Finch) do
+      true -> Req.Finch
+      false -> &Steps.run_finch/1
+    end
   end
 
   defp resp_to_conn(conn, %{status: status, headers: headers, body: body}) do
