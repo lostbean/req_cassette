@@ -56,8 +56,8 @@ req_cassette/
 # mix.exs
 def deps do
   [
-    {:req, "~> 0.5.15"},
-    {:req_cassette, "~> 0.5.0"}
+    {:req, "~> 0.7"},
+    {:req_cassette, "~> 0.6"}
   ]
 end
 ```

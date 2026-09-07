@@ -2,7 +2,7 @@
 
 ```elixir
 Mix.install([
-  {:req_llm, "~> 1.0.0-rc.7"},
+  {:req_llm, "~> 1.22"},
   {:req_cassette, path: Path.join(__DIR__, "..")}
 ])
 ```

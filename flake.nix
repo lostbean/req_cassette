@@ -2,7 +2,7 @@
   description = "ReqCassette flake";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-unstable.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
@@ -16,8 +16,10 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
+        toolchain-nixpkgs = if system == "x86_64-darwin" then nixpkgs else nixpkgs-unstable;
+
         unstable-packages = final: _prev: {
-          unstable = import nixpkgs-unstable {
+          unstable = import toolchain-nixpkgs {
             inherit system;
             config.allowUnfree = true;
           };
@@ -37,13 +39,13 @@
           buildInputs =
             with pkgs;
             [
-              unstable.beamMinimal28Packages.elixir_1_20
-              unstable.beamMinimal28Packages.elixir-ls
-              unstable.beamMinimal28Packages.erlang
-              unstable.beamMinimal28Packages.rebar3
+              unstable.beamMinimal29Packages.elixir_1_20
+              unstable.beamMinimal29Packages.elixir-ls
+              unstable.beamMinimal29Packages.erlang
+              unstable.beamMinimal29Packages.rebar3
               unstable.livebook
               rebar3
-              nodePackages.prettier
+              prettier
               ast-grep
 
             ]

@@ -269,7 +269,6 @@ defmodule ReqCassette.Plug do
   import Plug.Conn
 
   alias Plug.Conn
-  alias Req.Steps
   alias ReqCassette.BodyType
   alias ReqCassette.Cassette
   alias ReqCassette.Session
@@ -845,19 +844,53 @@ defmodule ReqCassette.Plug do
       opts
       |> Map.get(:req_options, [])
       |> Keyword.drop([:plug, :adapter])
+      |> normalize_adapter_options()
 
     # Create a new Req without the plug option to avoid infinite recursion.
-    #
-    # Req.Steps.run_finch/1 is Req internals, not public API, so it is the
-    # single point the req version range in mix.exs rests on. A Req release
-    # that renames or reshapes it breaks recording here
-    # without any deprecation warning; the compatibility matrix in
-    # .github/workflows/ci.yml is what catches that, so widening the range
-    # means adding a row there rather than just editing the constraint.
-    req = Req.new([adapter: &Steps.run_finch/1] ++ forwarded_opts)
+    req = Req.new([adapter: network_adapter()] ++ forwarded_opts)
 
     resp = Req.request(req, req_opts)
     {conn, resp}
+  end
+
+  # Req 0.7 made Req.Finch the public module-based adapter. Older supported
+  # releases accept only the request-step function.
+  defp network_adapter do
+    if module_adapter?() do
+      Req.Finch
+    else
+      fn request -> apply(Req.Steps, :run_finch, [request]) end
+    end
+  end
+
+  defp normalize_adapter_options(options) do
+    if module_adapter?() do
+      migrate_finch_options(options, [:pool_timeout, :pool_max_idle_time])
+    else
+      options
+    end
+  end
+
+  defp migrate_finch_options(options, keys) do
+    {finch, options} = Keyword.pop(options, :finch, [])
+    finch = if is_list(finch), do: finch, else: [name: finch]
+
+    {finch, options} =
+      Enum.reduce(keys, {finch, options}, fn key, {finch, options} ->
+        case Keyword.pop(options, key) do
+          {nil, options} -> {finch, options}
+          {value, options} -> {Keyword.put_new(finch, key, value), options}
+        end
+      end)
+
+    if finch == [], do: options, else: Keyword.put(options, :finch, finch)
+  end
+
+  defp module_adapter? do
+    Req.Request
+    |> apply(:__struct__, [])
+    |> Map.fetch!(:adapter)
+    |> is_atom()
   end
 
   defp resp_to_conn(conn, %{status: status, headers: headers, body: body}) do

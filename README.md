@@ -56,13 +56,15 @@ Replays instantly from cassette (no network!)
 
 ## Installation
 
+ReqCassette requires Elixir 1.18 or later.
+
 Add to your `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:req, "~> 0.5.15"},
-    {:req_cassette, "~> 0.2.0"}
+    {:req, "~> 0.7"},
+    {:req_cassette, "~> 0.6"}
   ]
 end
 ```

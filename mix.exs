@@ -32,10 +32,10 @@ defmodule ReqCassette.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:req, "~> 0.5.15 or ~> 0.6"},
+      {:req, "~> 0.5.15 or ~> 0.6 or ~> 0.7"},
       {:plug, "~> 1.18"},
       {:jason, "~> 1.4"},
-      {:req_llm, "~> 1.0.0-rc.7", only: [:dev, :test], runtime: false},
+      {:req_llm, "~> 1.22", only: [:dev, :test], runtime: false},
       {:bypass, "~> 2.1", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}

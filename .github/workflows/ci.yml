@@ -11,15 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Install Nix
-        uses: cachix/install-nix-action@v27
+        uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
           extra_nix_config: |
             experimental-features = nix-command flakes
       - name: Cache Nix store
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/nix
@@ -28,7 +28,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nix-
       - name: Cache Mix dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             deps
@@ -48,11 +48,9 @@ jobs:
         run: nix develop -c mix credo
 
   compatibility:
-    # Proves the version ranges declared in mix.exs actually hold: the
-    # oldest and newest supported Elixir, each against the oldest and
-    # newest req allowed by "~> 0.5.15 or ~> 0.6". Deps are resolved
-    # unlocked so mix.lock cannot mask a range that does not work.
-    name: Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }} / req ${{ matrix.req }}
+    # Exercise the lower and upper OTP bounds supported by every Elixir
+    # minor accepted by the requirement in mix.exs.
+    name: Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }}
     runs-on: ubuntu-latest
     env:
       MIX_ENV: test
@@ -60,36 +58,53 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Floor of the supported Elixir range.
-          - elixir: "1.18.4"
-            otp: "27.3"
-            req: "0.5.15"
-          - elixir: "1.18.4"
-            otp: "27.3"
-            req: "0.6.3"
-          # Elixir 1.18 on OTP 28 is where the module-attribute regex
-          # compile error surfaced, so it gets its own entry.
-          - elixir: "1.18.4"
-            otp: "28.0"
-            req: "0.6.3"
-          # Current toolchain, matching the Nix dev shell.
-          - elixir: "1.20.1"
-            otp: "28.0"
-            req: "0.5.15"
-          - elixir: "1.20.1"
-            otp: "28.0"
-            req: "0.6.3"
+          - elixir: "1.18.5"
+            otp: "25"
+          - elixir: "1.18.5"
+            otp: "27"
+          - elixir: "1.19.5"
+            otp: "26"
+          - elixir: "1.19.5"
+            otp: "28"
+          - elixir: "1.20.4"
+            otp: "27"
+          - elixir: "1.20.4"
+            otp: "29"
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
+      - name: Install Mix dependencies
+        run: mix deps.get
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+      - name: Run tests
+        run: mix test
+
+  req-compatibility:
+    # Resolve without mix.lock so every declared Req release line is tested
+    # on the minimum supported Elixir release.
+    name: Elixir 1.18 / OTP 27 / req ${{ matrix.req }}
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    strategy:
+      fail-fast: false
+      matrix:
+        req: ["0.5.15", "0.6.3", "0.7.4"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18.5"
+          otp-version: "27"
       - name: Pin req to ${{ matrix.req }}
-        # Resolves without mix.lock so the range declared in mix.exs is
-        # what actually gets exercised, and asserts the pin took effect.
         run: .github/workflows/pin-req.sh '${{ matrix.req }}'
       - name: Compile with warnings as errors
         run: mix compile --warnings-as-errors

@@ -70,8 +70,8 @@ with_cassette "llm_test",
 # mix.exs
 def deps do
   [
-    {:req_llm, "~> 1.0.0-rc.7"},
-    {:req_cassette, "~> 0.4.0"}
+    {:req_llm, "~> 1.22"},
+    {:req_cassette, "~> 0.6"}
   ]
 end
 ```

@@ -22,7 +22,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:req_llm, "~> 1.0.0-rc.7"},
+    {:req_llm, "~> 1.22"},
     {:req_cassette, path: "."} # or from hex when published
   ]
 end
